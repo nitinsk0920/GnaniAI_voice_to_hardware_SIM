@@ -1,6 +1,6 @@
 # CLAUDE.md: Voice-to-Hardware Simulator
 
-Last updated: 2026-11-08. Read this file fully, then **`MEMORY.md` (handoff: current state, open items, how to test)**, then `WORKFLOW.md` (agent design) when changing the agent. On a new machine, start with section 5b.
+Last updated: 2026-11-08 (chat). Read this file fully, then **`MEMORY.md` (handoff: current state, open items, how to test)**, then `WORKFLOW.md` (agent design) when changing the agent. On a new machine, start with section 5b.
 Working folder: `D:\gnani`. Entry for the **Great Indian AI Internship Challenge (Gnani AI)**.
 **Deadline: November 10, 2026 (no extensions).** Build locally until the demo video is posted. BYOK and deployment come after (section 9).
 
@@ -81,6 +81,7 @@ It produces `out\blink.ino.hex` (about 2.6 KB). **Use `blink.ino.hex`, never the
 - The last argument of `arduino-cli compile` is the sketch folder relative to the current directory, and the **folder name must equal the `.ino` file name** (`blink/blink.ino`). Wrong directory gives "Can't open sketch" or "main file missing from sketch".
 - After changing PATH, VS Code and PowerShell must be fully restarted.
 - Avoid Notepad for `.ino` files (it can save `.ino.txt`).
+- **Never move or copy a `.venv`.** Its `.exe` launchers (`uvicorn.exe`, `pip.exe`) hard-code the folder it was created in, so after a move they fail with "Fatal error in launcher: Unable to create process". Rebuild it in place: `py -3.12 -m venv --clear .venv` then `.venv\Scripts\python -m pip install -r backend\requirements.txt` (happened Nov 8 after moving the project off OneDrive).
 
 ## 5b. Setup on a new machine
 
@@ -133,7 +134,7 @@ D:\gnani\
     verify\verify.mjs             headless avr8js run (Phase 3), with its own package.json
     requirements.txt
   sim\                            Vite vanilla project
-    index.html   main.js   simulator.js   circuit.js (parts, wiring)   signals.js (graph)   voice.js (mic to WAV)
+    index.html   main.js   simulator.js   circuit.js (parts, wiring)   signals.js (graph)   voice.js (mic to WAV)   chat.js (chat panel)
   arduino\libraries\Servo\        Servo 1.3.0 (LGPL-2.1), vendored
   tests\                          offline tests, live agent test, headless-Edge UI driver (see MEMORY.md)
   MEMORY.md                       handoff notes for the next session
@@ -248,6 +249,7 @@ function loadHex(source, target) {
 | Phase 3 | Done (Nov 8): headless verify + evaluator, explain node, SSE streaming, circuit panel (Uno, LED, button, servo, buzzer, potentiometer, pin dropdowns), live signal graph, dev modes `compile` and `timing` |
 | Phase 4 | Done (Nov 8): `gnani.py`, `/transcribe`, `/speak`, browser WAV recorder (`sim/voice.js`), mic button, transcript line, spoken replies. Live-tested: Prisma exact on English clip (0.5-3.4 s), Timbre EN/HI/KN MP3s (2.6-5.4 s), full voice loop verified in headless Edge with a fake mic. Still to do by the user: real-mic test and listening to Hindi/Kannada quality (`out/voice-test/*.mp3`) |
 | Boards | Nov 9: board profiles (`backend/boards/*.json`) plus shared chip setups (`backend/boards/avr_chips.mjs`, used by the browser and the verifier). **Uno, Nano and Mega 2560 done.** Nano: A6/A7 analog-only. Mega: custom timers 0-5, ports A-L with correct interrupts, 16-channel ADC (A8-A15 via MUX5); all 15 PWM pins, servo (Timer5), tone (Timer2), A0/A8 and attachInterrupt measured in `tests/test_mega.py` (25/25). Next (later): Raspberry Pi Pico (rp2040js; bootrom not in the npm package; needs the arduino-pico core). ESP32/STM32: no open-source engine, Wokwi CI parked by the user |
+| Chat | Done (Nov 8): chat panel (user/agent bubbles, live steps in the reply, result card), `understand` node (build vs. question; answers from code, circuit, measurements and conversation in the user's language/script), line-by-line explanation (click a row to select the line), editor line numbers, session restore after reload (`GET /session/{id}`), LLM retry and Groq-to-Gemini backup on rate limits. Tested offline (fake LLM) and in headless Edge (`tests/ui_chat.json`, `tests/ui_timing_bug.json`) |
 | Phase 5 | Next: polish and demo |
 
 Phase 4 notes (from docs.gnani.ai, Nov 8):

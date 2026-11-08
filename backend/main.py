@@ -53,8 +53,12 @@ def board_or_400(board_id):
 
 class RunRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=64)
-    text: str = Field(min_length=1, max_length=500)
+    text: str = Field(min_length=1, max_length=1000)
     circuit: dict
+    # "auto": the agent decides between answering (chat) and building; "build" skips that step
+    # (e.g. a "Try next" chip); "chat" asks for an answer only.
+    mode: Literal["auto", "build", "chat"] = "auto"
+    via: Literal["text", "voice"] = "text"
     # Dev switch: "compile" breaks the code before the first compile; "timing" makes it 4x too slow
     # so the measured check fails. true is accepted as "compile" (Phase 2 clients).
     debug_break: Union[bool, Literal["", "compile", "timing"]] = ""
@@ -111,6 +115,14 @@ def boards():
     return [{"id": b["id"], "name": b["name"], "chip": b["chip"]} for b in agent.BOARDS.values()]
 
 
+@app.get("/session/{session_id}")
+def session_route(session_id: str):
+    """The conversation, circuit, board and code of a session, so a reloaded page can continue it."""
+    if not 1 <= len(session_id) <= 64:
+        raise HTTPException(status_code=400, detail="bad session id")
+    return agent.session_snapshot(GRAPH, session_id)
+
+
 @app.post("/compile")
 def compile_route(req: CompileRequest):
     if not req.code.strip():
@@ -135,7 +147,8 @@ def run_route(req: RunRequest):
 
     def events():
         try:
-            for event in agent.stream_agent(GRAPH, req.session_id, req.text.strip(), req.circuit, mode, req.board):
+            for event in agent.stream_agent(GRAPH, req.session_id, req.text.strip(), req.circuit, mode, req.board,
+                                            mode=req.mode, via=req.via):
                 if event["type"] == "result":
                     event["llm"] = "/".join(provider_info())
                 yield f"data: {json.dumps(event)}\n\n"

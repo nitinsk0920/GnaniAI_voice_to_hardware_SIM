@@ -7,7 +7,7 @@
   {"eval": "document.querySelector('#request').value='make the LED breathe slowly, and when I press the button keep it fully on'; document.querySelector('#askBtn').click(); 'asked'"},
   {"waitFor": "/Verified|could not|failed/.test(document.querySelector('#agentStatus').textContent)", "timeout": 120000},
   {"sleep": 3500},
-  {"eval": "({agent: document.querySelector('#agentStatus').textContent, steps: [...document.querySelectorAll('#steps li')].map(l=>l.textContent), verified: [...document.querySelectorAll('#exVerified li')].map(l=>l.textContent), spoken: document.querySelector('#exSpoken').textContent, led: document.querySelector('wokwi-led').brightness})", "print": "agent result"},
+  {"eval": "({agent: document.querySelector('#agentStatus').textContent, steps: [...([...document.querySelectorAll('#messages .msg.build')].pop()?.querySelectorAll('.how li')||[])].map(l=>l.textContent), verified: [...([...document.querySelectorAll('#messages .msg.build')].pop()?.querySelectorAll('.verified li')||[])].map(l=>l.textContent), spoken: ([...document.querySelectorAll('#messages .msg.build')].pop()?.querySelector('.spoken')?.textContent||''), led: document.querySelector('wokwi-led').brightness})", "print": "agent result"},
   {"shot": "2-after-agent.png"},
   {"eval": "document.querySelector('wokwi-pushbutton').dispatchEvent(new Event('button-press')); 'pressed'", "sleep": 1500},
   {"eval": "({ledBrightness: document.querySelector('wokwi-led').brightness, ledOn: document.querySelector('wokwi-led').value})", "print": "while button held (expect full brightness)"},

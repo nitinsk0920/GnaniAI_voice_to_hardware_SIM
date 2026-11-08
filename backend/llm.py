@@ -2,7 +2,12 @@
 
 Switch provider in .env:  LLM_PROVIDER=groq  or  LLM_PROVIDER=gemini
 Optional overrides:       GROQ_MODEL=..., GEMINI_MODEL=..., LLM_REASONING=low|medium|high
+Backup provider:          LLM_FALLBACK=auto (default: the other provider, if its key is set) | gemini | groq | none
 Both providers expose an OpenAI-compatible chat endpoint, so one function covers both.
+
+Rate limits: Groq's free tier allows about 8,000 tokens a minute for gpt-oss-120b, roughly one build
+(understand + plan + explain) per minute. When the provider is busy (429/503), a timeout or a 5xx,
+_post retries briefly or moves to the backup provider instead of failing the request.
 """
 import json
 import os
@@ -26,6 +31,24 @@ PROVIDERS = {
     },
 }
 TIMEOUT_S = 30
+QUICK_RETRY_S = 3    # a busy provider asking for at most this wait is simply retried
+MAX_WAIT_S = 20      # with no backup provider, wait at most this long for the rate limit to reset
+
+
+def retry_after_seconds(response):
+    """Seconds the provider asks us to wait (Retry-After header), or 2 s if it does not say."""
+    try:
+        return max(0.5, float(response.headers.get("retry-after", "2")))
+    except ValueError:
+        return 2.0
+
+
+class Busy(Exception):
+    """The provider is rate limited, overloaded, timing out or failing (5xx): another try may work."""
+
+    def __init__(self, message, wait):
+        super().__init__(message)
+        self.wait = wait
 
 
 class LLMError(Exception):
@@ -45,33 +68,66 @@ def provider_info():
     return name, os.getenv(p["model_env"]) or p["default_model"]
 
 
-def _post(messages):
-    name, model = provider_info()
+def fallback_provider(primary):
+    """The backup provider to use when the primary is busy, or None."""
+    choice = os.getenv("LLM_FALLBACK", "auto").strip().lower()
+    if choice in ("", "none", "off"):
+        return None
+    other = next(n for n in PROVIDERS if n != primary) if choice == "auto" else choice
+    if other == primary or other not in PROVIDERS or not os.getenv(PROVIDERS[other]["key_env"]):
+        return None
+    return other
+
+
+def _call(name, messages):
+    """One request to one provider. Raises Busy (worth another try) or LLMError (it is not)."""
     p = PROVIDERS[name]
     key = os.getenv(p["key_env"])
     if not key:
         raise LLMError(f"{p['key_env']} is missing from .env", bad_output=False)
-
     body = {
-        "model": model,
+        "model": os.getenv(p["model_env"]) or p["default_model"],
         "messages": messages,
         "temperature": 0.2,
         "response_format": {"type": "json_object"},
         "reasoning_effort": os.getenv("LLM_REASONING", "low"),
     }
     try:
-        r = httpx.post(p["url"], json=body, timeout=TIMEOUT_S,
-                       headers={"Authorization": f"Bearer {key}"})
+        r = httpx.post(p["url"], json=body, timeout=TIMEOUT_S, headers={"Authorization": f"Bearer {key}"})
     except httpx.TimeoutException:
-        raise LLMError(f"{name} did not answer within {TIMEOUT_S} s", bad_output=False)
+        raise Busy(f"{name} did not answer within {TIMEOUT_S} s", wait=float("inf"))
     except httpx.HTTPError as e:
-        raise LLMError(f"could not reach {name}: {e}", bad_output=False)
-
+        raise Busy(f"could not reach {name}: {e}", wait=float("inf"))
     if r.status_code == 429:
-        raise LLMError(f"{name} rate limit reached; wait a minute or switch LLM_PROVIDER", bad_output=False)
+        raise Busy(f"{name} rate limit reached", wait=retry_after_seconds(r))
+    if r.status_code >= 500:
+        raise Busy(f"{name} returned HTTP {r.status_code} (busy or down)", wait=retry_after_seconds(r))
     if r.status_code != 200:
         raise LLMError(f"{name} returned HTTP {r.status_code}: {r.text[:300]}", bad_output=False)
     return r.json()["choices"][0]["message"].get("content") or ""
+
+
+def _post(messages):
+    """Ask the configured provider; when it is busy, retry briefly or use the backup provider."""
+    primary, _ = provider_info()
+    try:
+        return _call(primary, messages)
+    except Busy as e:
+        busy = e
+    backup = fallback_provider(primary)
+    if busy.wait <= QUICK_RETRY_S or (not backup and busy.wait <= MAX_WAIT_S):
+        time.sleep(busy.wait)
+        try:
+            return _call(primary, messages)
+        except Busy as e:
+            busy = e
+    if backup:
+        print(f"[llm] {busy}; using the backup provider {backup}", flush=True)  # shows in the uvicorn window
+        try:
+            return _call(backup, messages)
+        except Busy as e:
+            raise LLMError(f"{busy}; backup {e}; please try again in a minute", bad_output=False)
+    raise LLMError(f"{busy}; please try again in a minute", bad_output=False)
 
 
 def parse_json(text):

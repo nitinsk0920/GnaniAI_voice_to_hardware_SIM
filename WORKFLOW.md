@@ -1,6 +1,6 @@
 # WORKFLOW.md: the agent design for the Voice-to-Hardware Simulator
 
-Last updated: 2026-11-07. Companion to `CLAUDE.md`. CLAUDE.md says **what, why and in what order**; this file says **exactly how the agent works**. Build it phase by phase as laid out in CLAUDE.md section 8. Phase 1 needs none of this file.
+Last updated: 2026-11-08 (chat added). Companion to `CLAUDE.md`. CLAUDE.md says **what, why and in what order**; this file says **exactly how the agent works**. Build it phase by phase as laid out in CLAUDE.md section 8. Phase 1 needs none of this file.
 
 ## 1. Decisions (settled)
 
@@ -10,7 +10,8 @@ Last updated: 2026-11-07. Companion to `CLAUDE.md`. CLAUDE.md says **what, why a
 | Database | **Tiny SQLite.** Not critical to the demo. | Used so refinements ("make it slower") remember the current circuit and code, and for a run history. If it causes trouble, use LangGraph's in-memory `MemorySaver`. |
 | Redis | **No.** | Single-user demo; it has no native Windows build and solves problems we do not have. |
 | Self-looping agent | **Yes**, capped and measured. | The loop is the standout feature. |
-| Explain the code | **Yes**, a dedicated `explain` step. | The user gets code plus a plain-language walkthrough. |
+| Explain the code | **Yes**, a dedicated `explain` step, **line by line**. | The user gets code plus a short note on every meaningful line. |
+| Chat | **Yes**, an `understand` step before planning. | Questions ("why millis?", "explain line 7") are answered from the code, circuit and measurements without rebuilding; change requests go to the build loop. |
 | Pin numbers | **Owned by the circuit spec and backend**, never invented by the LLM. | Keeps code and circuit in sync (section 5). |
 | LLM provider | **Behind `llm.py`.** Evon if the Gnani platform serves it, otherwise a swappable hosted LLM. | Evon's API availability is unconfirmed (CLAUDE.md section 2). |
 
@@ -26,7 +27,10 @@ Last updated: 2026-11-07. Companion to `CLAUDE.md`. CLAUDE.md says **what, why a
 
 ```mermaid
 flowchart TD
-    A[Request: typed, or Prisma transcript, plus the user's circuit] --> B[plan_and_code: LLM returns circuit, checks, stimulus, code as JSON]
+    A[Message: typed, or Prisma transcript, plus the user's circuit] --> U[understand: LLM decides build or chat]
+    U -->|chat| R[answer from code, circuit, test results and conversation]
+    R --> I
+    U -->|build| B[plan_and_code: LLM returns circuit, checks, stimulus, code as JSON]
     B --> C[preflight: validation in Python]
     C -->|invalid| F[fix]
     C -->|ok| D[compile: arduino-cli]
@@ -35,14 +39,14 @@ flowchart TD
     D -->|compile error| F
     D -->|hex ok| E[simulate and evaluate: headless avr8js plus Python evaluator]
     E -->|a check fails| F
-    E -->|all checks pass| G[explain: LLM writes walkthrough]
+    E -->|all checks pass| G[explain: LLM writes a note for every line]
     F -->|attempts left| D
     F -->|attempts exhausted or time cap| H[give_up: honest report]
     G --> I[respond: save to SQLite, return everything]
     H --> I
     I --> J[Browser runs the hex live and shows the graph; Timbre speaks the summary]
 ```
-Everything from `plan_and_code` to `respond` is one LangGraph run. Retries are conditional edges. A fix that failed `preflight` returns to `preflight`; any other fix goes to `compile`.
+Everything from `understand` to `respond` is one LangGraph run. Retries are conditional edges. Every fix goes back through `preflight` (instant) before compiling.
 
 ## 4. Graph state (one dict passed between nodes)
 
@@ -57,7 +61,10 @@ attempts           # fix cycles used (cap 3)
 history            # list of {attempt, stage, problem, change_made}; fed back to the LLM
 compile_error, measurements, verdict, report
 explanation, spoken_summary, status   # status: "passed" | "gave_up"
+messages           # the conversation [{role, text, kind: chat|build, ...}], kept across requests (last 60)
+mode, via, intent, reply, reply_lines # per message: auto|build|chat, text|voice, the decision, the chat answer
 ```
+Per-message fields are reset by `stream_agent`; build fields (`attempts`, `history`, `hex`, `report`, `explanation` ...) are reset by `plan_and_code` (`BUILD_RESET`), so a chat question after a build still sees that build's code, measurements and fixes.
 
 ## 5. Board definition and pin injection (the backend owns the numbers)
 
@@ -112,11 +119,19 @@ explanation, spoken_summary, status   # status: "passed" | "gave_up"
 
 **`fix` output:** `{"code": "...", "checks": [...optional...], "stimulus": [...optional...], "note": "what changed and why"}`. Return `checks` only if the original request was misread.
 
-**`explain` output:** `{"summary": "...", "walkthrough": [{"lines": "3-5", "what": "...", "why": "..."}], "try_next": ["...", "..."], "spoken_summary": "..."}`.
+**`understand` output:** `{"intent": "build"}` or `{"intent": "chat", "reply": "...", "lines": "12-14", "spoken": "..."}`.
+
+**`explain` output:** `{"summary": "...", "lines": [{"line": 5, "note": "..."}], "try_next": ["...", "..."], "spoken_summary": "..."}`. The backend chooses which lines need a note (`explain_line_numbers`: not blank, braces or comments) and attaches each line's code text itself (`line_by_line`), so the model never quotes code.
 
 **Parsing:** strip code fences, parse JSON, validate required keys. If parsing fails, re-ask once with "return valid JSON only"; a second failure counts as a fix attempt.
 
 ## 7. Nodes
+
+### 7.0 `understand` (LLM, one call; skipped when `mode` is `build`)
+- Adds the user's message to `messages`, then sends the board facts, parts, numbered current code, last test results, recent conversation (8 messages) and a script hint (Latin, Devanagari or Kannada, from `script_hint`).
+- A change request ("slower", "add a buzzer", "yes, do that") returns `build` and goes to `plan_and_code`. Anything else is answered right away: questions about the code, wiring, measurements or fixes, general Arduino questions, greetings. The answer cites line numbers, never invents measurements, and is written in the user's language and script. If unsure, it asks back instead of changing code.
+- An LLM error here falls back to `build`, which reports provider problems honestly.
+- "Try next" chips send `mode: "build"` (no understand call).
 
 ### 7.1 `plan_and_code` (LLM)
 - Input: the request, the **circuit the user designed in the UI**, the board facts (PWM pins, pin rules), and the current code if this is a refinement (from the checkpoint). The user's circuit is the source of truth: the agent writes code for that wiring and does not silently rewire it. If the user asks by voice to add or move a part, return an updated `circuit` and the UI redraws.
@@ -165,10 +180,10 @@ Failure goes to `fix` with a precise message ("analogWrite on pin 7, which is no
 Reached when `attempts` exceeds 3 or total run time exceeds about 90 s. Return the last code, the last problem and a short plain explanation. **Never fake success.** `spoken_summary` says plainly that it could not get it working and why.
 
 ### 7.9 `explain` (LLM, only after all checks pass)
-The LLM supplies only `summary` (2 sentences), `walkthrough` (block by block: what each part does and why), `try_next` (2 or 3 voice commands to try), and `spoken_summary` (1 or 2 short sentences). **The backend adds `verified` from the evaluator's results and `fixes_made` from `history`.** Beginner level: say what `pinMode`, `analogWrite` and `delay` are doing in this sketch. The UI shows the full explanation with the code. Timbre speaks only `spoken_summary`, never code.
+The LLM supplies only `summary` (2 sentences), `lines` (one short note per line the backend lists), `try_next` (2 or 3 commands to try), and `spoken_summary` (1 or 2 short sentences). **The backend adds `verified` from the evaluator's results, `fixes_made` from `history`, and the code text of each line.** Summary and notes follow the user's language and script with numbers as digits; only `spoken_summary` spells numbers out. The chat shows the explanation as a table (click a row to select that line in the editor). Timbre speaks only `spoken_summary`, never code.
 
 ### 7.10 `respond`
-Save the run to SQLite; return `{circuit, code, full_code, hex, checks, report, explanation, spoken_summary, history, status}`. The browser loads the hex into avr8js and shows the live circuit and graph; the live result should agree with the headless one.
+Chat: append the answer to `messages`. Build: save the run to SQLite, append a message with the result card (`build_card`: status, explanation, wiring changes, steps, timing) so a reloaded page can redraw it, and return `{kind: "build", circuit, code, full_code, hex, checks, report, explanation, spoken_summary, history, status}`. The browser loads the hex into avr8js and shows the live circuit and graph; the live result should agree with the headless one.
 
 ## 8. Check vocabulary and evaluator rules
 
@@ -190,6 +205,7 @@ Start with the first three; add the rest in order if time allows. All times in m
 
 ## 9. Loop limits (protect credits and time)
 - Maximum **3 fix attempts** per request, **1 library install**, about **90 s** total per request, **30 s** timeout per LLM call.
+- LLM provider busy (429/503), timing out or failing (5xx): `llm.py` retries once after a short wait (at most 3 s), otherwise moves to the backup provider (`LLM_FALLBACK`, default the other provider if its key is set); with no backup it waits up to 20 s. Groq's free tier gives gpt-oss-120b about 8,000 tokens a minute, roughly one build per minute.
 - Repeat-error guard (7.4).
 - Prisma and Timbre are called **once per request**. Never loop on them. During development test with typed input and few runs.
 
@@ -199,12 +215,12 @@ Start with the first three; add the rest in order if time allows. All times in m
 |---|---|---|
 | `GET /health` | Check that backend, arduino-cli and node are found. | 1 |
 | `POST /compile` | `{code}` returns `{ok, hex}` or `{ok: false, error}`. Kept as a dev endpoint. | 1 |
-| `POST /run` | `{session_id, text, circuit}` runs the graph. Optional dev flag `debug_break=1` injects a compile error on attempt 1. | 2 (streaming in 3) |
+| `POST /run` | `{session_id, text, circuit, board, mode: auto\|build\|chat, via: text\|voice}` runs the graph for one chat message. Dev flag `debug_break`: `"compile"` or `"timing"`. | 2 (streaming in 3, chat Nov 8) |
+| `GET /session/{id}` | `{messages, board, circuit, full_code, hex}` so a reloaded page continues the session. | chat |
 | `POST /transcribe` | Audio in, text out (Prisma). | 4 |
 | `POST /speak` | Text in, audio out (Timbre). | 4 |
-| `GET /runs?session_id=` | Optional run history. | 3+ |
 
-`POST /run` streams progress as Server-Sent Events from LangGraph's `stream`: `planning`, `preflight`, `compiling (attempt n)`, `verifying`, `fixing: <short reason>`, `explaining`, then a final `result` event with the section 7.10 payload. `EventSource` cannot send POST, so the browser reads the stream with `fetch` and a `ReadableStream`. The UI shows the events as a live status line; visible self-correction is a highlight of the demo.
+`POST /run` streams progress as Server-Sent Events from LangGraph's `stream`: `understanding`, `planning`, `preflight`, `compiling (attempt n)`, `verifying`, `fixing: <short reason>`, `explaining`, then a final `result` event: `{kind: "chat", reply, lines, spoken_summary}` or `{kind: "build", ...}` with the section 7.10 payload. `EventSource` cannot send POST, so the browser reads the stream with `fetch` and a `ReadableStream`. The UI shows the events as a live status line; visible self-correction is a highlight of the demo.
 
 ## 11. Database (SQLite, `backend/gnani.db`)
 - `sessions(id, created_at)`

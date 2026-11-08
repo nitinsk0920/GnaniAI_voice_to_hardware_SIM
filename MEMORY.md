@@ -1,6 +1,6 @@
 # MEMORY.md: handoff notes for the next session
 
-Last updated: 2026-11-08 (end of Phase 4). The project moves to another laptop from here.
+Last updated: 2026-11-08 (chat interface added, on the new laptop at `C:\GnaniAI_voice_to_hardware_SIM`).
 **Read order for a new session:** `CLAUDE.md` (rules, plan, status table, lessons) → this file (where we are, what's next) → `WORKFLOW.md` (agent design, only when changing the agent).
 
 ## About the user
@@ -14,7 +14,10 @@ Last updated: 2026-11-08 (end of Phase 4). The project moves to another laptop f
 - **Phases 1 to 4 are done** (details in the CLAUDE.md status table).
 - Flow: voice (Prisma) or text → LangGraph agent (plan → preflight → compile → headless verify → fix loop → explain) → browser runs the hex live → Timbre speaks the summary.
 - Parts: LED, push button, servo, buzzer, potentiometer. Each is simulated, interactive on screen, and measured by `backend/evaluator.py`.
-- UI: drawn wiring, pin dropdowns ("~" = PWM), live signal graph, streamed progress steps, explanation panel (verified ✓/✗, fixes made, walkthrough, try-next chips), wiring-change notice.
+- UI: drawn wiring, pin dropdowns ("~" = PWM), live signal graph, wiring-change notice, code editor with line numbers.
+- **Chat (Nov 8, user request):** a chat panel on the right. The `understand` node decides per message: a change request runs the build loop; a question ("why millis?", "explain line 7", "LED kitni der on rehta hai?") is answered from the code, circuit, measurements and conversation, in the user's language and script, with clickable line links. A build reply is a card: verified ✓/✗, fixes, wiring changes, **the code explained line by line** (click a row to select it in the editor), try-next chips (sent as `mode: build`). The conversation lives in the LangGraph checkpoint (`messages`), and a page reload restores chat, circuit, board and code (`GET /session/{id}`). Chat replies are spoken too when "Speak replies" is on (1 Timbre call each).
+- Verified on Nov 8: mic and Timbre Hindi/Kannada (user), chat in English and Hinglish, timing-bug self-fix and "slower" in the chat.
+- **Groq free tier limit:** gpt-oss-120b allows about 8,000 tokens a minute, roughly one build a minute (understand + plan + explain, more with fixes). `llm.py` now retries briefly and otherwise switches to Gemini automatically (prints `[llm] ... using the backup provider gemini` in the uvicorn window). For the recording, leave about a minute between builds or the backup will answer some of them. A paid Groq tier would remove this.
 - Dev test dropdown: "break the first compile" and "timing bug" (4x too slow, so the measurement fails and the agent fixes it). **Use "timing bug" for the demo's self-correction.**
 - LLM: Groq `openai/gpt-oss-120b` (about 1 s per call). Gemini `gemini-3.5-flash` is the backup (`LLM_PROVIDER=gemini` in `.env`).
 - Gnani live-tested on Nov 8: Prisma heard an English clip exactly. Timbre returned valid MP3s in English, Hindi and Kannada. A full voice request was verified in headless Edge with a fake microphone. Timbre takes about 5 s for 2 sentences.
@@ -57,8 +60,7 @@ wokwi-elements has pictures for: 7segment, analog-joystick, biaxial-stepper, big
 **Until then:** a request for any other part stops at once with an honest message ("I can't simulate a relay yet. Right now I can use ..."). It comes from the `unsupported` field in the plan reply, or from preflight seeing a hardware library include such as `LiquidCrystal.h` (`HARDWARE_LIBRARIES` in `graph.py`). This was added after a run where the model quietly dropped the LCD and "passed" with an LED check; that must never happen.
 
 ## Open items, in priority order (Phase 5: Nov 9, then record and post on Nov 10)
-1. **Real microphone test.** The old laptop's mic is broken. Options: the new laptop's mic, earphones with a mic, or the phone (see 5).
-2. **The user listens to Timbre Hindi and Kannada** (regenerate samples with `/speak`; the old ones were in the old laptop's `out/voice-test/`). If they sound wrong, try another voice: `GNANI_TTS_VOICE=Lakshmi` (v3.0 voices: Shivani [default], Avinash, Lakshmi, Kalpana, Shubham, Prakash, Devansh, Yashraj, Chetana, Vasudha, Riyaa, Tarika, Harshad).
+1. ~~Real microphone test~~ and 2. ~~Timbre Hindi/Kannada~~: both confirmed working by the user on Nov 8 (new laptop). Other voices if ever needed: `GNANI_TTS_VOICE=Lakshmi` (v3.0 voices: Shivani [default], Avinash, Lakshmi, Kalpana, Shubham, Prakash, Devansh, Yashraj, Chetana, Vasudha, Riyaa, Tarika, Harshad).
 3. **Demo script.** Two or three reliable commands, practised by typing first ("Speak replies" off saves credits):
    - "make the LED breathe" with LED1 on pin 13: the agent moves it to pin 9 and says so.
    - Add a button, then "when I press the button keep the LED fully on". Click the button on screen.
@@ -93,16 +95,17 @@ wokwi-elements has pictures for: 7segment, analog-joystick, biaxial-stepper, big
 - PowerShell 5.1: `Get-Content -Raw` adds properties that break `ConvertTo-Json` bodies; use `[IO.File]::ReadAllText`.
 
 ## How to test (the scripts are in `tests/`)
-- `.venv\Scripts\python tests\test_offline.py`: preflight rules, error line numbers. No LLM, no servers.
+- `.venv\Scripts\python tests\test_offline.py`: preflight rules, error line numbers, chat helpers, LLM retry/backup rules (fake HTTP), and a whole build → chat → build graph run with a scripted fake LLM (real compile and simulation). No LLM, no servers.
 - `.venv\Scripts\python tests\test_verify.py`: 12 sketches (10 Uno, half deliberately wrong, plus 2 Nano) through compile, headless simulation and the evaluator. No LLM, no servers. About 25 s.
 - `.venv\Scripts\python tests\test_mega.py`: Mega 2560 measured checks: 15 PWM pins, delay, servo, tone, port A button, A0/A8, attachInterrupt (25 checks). No LLM, no servers. About 30 s.
-- Browser scenarios for `tests\drive.mjs`: `ui_timing_bug.json`, `ui_breathe_button.json`, `ui_wiring_rewire.json`, `ui_nano.json`, `ui_mega.json`.
+- Browser scenarios for `tests\drive.mjs`: `ui_chat.json` (build, question, Hinglish question, line click, chip, reload; about 7 LLM calls), `ui_timing_bug.json`, `ui_breathe_button.json`, `ui_wiring_rewire.json`, `ui_nano.json`, `ui_mega.json`. The scenarios read the latest build card in `#messages`. Only `ui_chat` and `ui_timing_bug` switch "Speak replies" off; turn it off in the others before running them, or they use Timbre credits.
 - `.venv\Scripts\python tests\test_stream.py <session> <0|1> "<circuit json>" <request>`: one real agent run over SSE (needs the backend; uses the LLM).
 - `node tests\drive.mjs tests\ui_timing_bug.json out\ui`: drives headless Edge through the real page and saves screenshots to `out\ui` (needs both servers; uses the LLM). See the header of `drive.mjs` for the fake-microphone flags.
 
 ## File map
-- `backend/main.py`: routes `/health`, `/compile`, `/run` (SSE), `/transcribe`, `/speak`.
-- `backend/boards/*.json`: board profiles. `backend/graph.py`: `BOARDS`, `board_facts()`, LangGraph nodes, prompts (`CODE_RULES`, `CHECKS_DOC`, `PLAN_SYSTEM`, `FIX_SYSTEM`, `FIX_CHECKS_SYSTEM`, `EXPLAIN_SYSTEM`), preflight, sim config.
+- `backend/main.py`: routes `/health`, `/compile`, `/run` (SSE, one chat message), `/session/{id}`, `/transcribe`, `/speak`.
+- `backend/boards/*.json`: board profiles. `backend/graph.py`: `BOARDS`, `board_facts()`, LangGraph nodes (`understand` first), prompts (`CODE_RULES`, `CHECKS_DOC`, `PLAN_SYSTEM`, `FIX_SYSTEM`, `FIX_CHECKS_SYSTEM`, `EXPLAIN_SYSTEM`, `CONVERSE_SYSTEM`, shared `SPOKEN_RULES`/`WRITTEN_LANGUAGE`), preflight, sim config, `session_snapshot`.
+- `sim/chat.js`: the chat panel (bubbles, live steps, build card, line-by-line table, safe text formatting: model text is never inserted as HTML).
 - `backend/evaluator.py`: the measured checks. `backend/verify/verify.mjs`: the headless avr8js run.
 - `backend/llm.py`: Groq or Gemini. `backend/gnani.py`: Prisma and Timbre. `backend/compiler.py`: arduino-cli. `backend/db.py`: SQLite.
 - `sim/main.js`: page logic. `sim/circuit.js`: parts, wiring, interaction. `sim/signals.js`: pin history and graph. `sim/simulator.js`: browser avr8js. `sim/voice.js`: mic to WAV.

@@ -1,12 +1,14 @@
 """The agent loop as a LangGraph graph.
 
-    plan_and_code -> preflight -> compile -> verify -> explain -> respond
+    understand -> chat: answer the question directly -> respond
+               -> build: plan_and_code -> preflight -> compile -> verify -> explain -> respond
     any failure   -> fix -> preflight -> compile -> verify ...   (max 3 fixes, about 90 s)
     out of tries, or a provider/simulator error -> give_up -> respond
 
 The LLM never decides success: verify runs the hex headlessly (verify/verify.mjs) and
 evaluator.py compares the measured pins with the checks.
-State is checkpointed in SQLite per session, so a follow-up ("slower") sees the last code.
+State is checkpointed in SQLite per session: a follow-up ("slower") sees the last code, and the
+conversation (`messages`) lets the user ask questions about it in a chat.
 """
 import json
 import re
@@ -104,6 +106,16 @@ class State(TypedDict, total=False):
     started_at: float
     debug_break: str          # "" | "compile" | "timing" (dev switch, see break_code)
     break_done: bool
+    mode: str                 # "auto" (understand decides) | "build" | "chat"
+    via: str                  # "text" | "voice" (shown in the chat)
+    intent: str               # "build" | "chat" for this message
+    reply: str                # chat answer (intent chat)
+    reply_lines: str          # code lines the chat answer is about, e.g. "12-14"
+    messages: list            # the conversation, kept across requests in the session
+
+
+MAX_MESSAGES = 60            # kept in the checkpoint (older ones are dropped)
+CONTEXT_MESSAGES = 8         # sent to the LLM as "recent conversation"
 
 
 # ---------- prompts ----------
@@ -126,7 +138,7 @@ CHECKS_DOC = f"""Checks: the simulator runs the code for a few seconds and measu
 - {{"type":"servo_sweep","target":ID,"min_angle_below":N,"max_angle_above":N}}  (servo moves back and forth)
 - {{"type":"tone","target":ID,"freq_min":N,"freq_max":N}}  (buzzer plays a frequency in Hz)
 Any check may add "from_ms" and/or "to_ms" to look only at that time window (default: from 200 ms to the end of the test).
-Give every range a margin of about 25% on each side. Rough meanings: "fast" blink about 200 ms per cycle, "normal" about 1000 ms, "slow" about 2000 ms.
+Give every range a margin of about 25% on each side. Rough meanings: "fast" blink about 200 ms per cycle, "normal" about 1000 ms, "slow" about 2000 ms. "Slower" or "faster" without a number means about 2 times slower or faster than the current code. Keep blink and breathe periods at most 5000 ms so the test can see two cycles.
 
 Stimulus simulates the user during the test: [{{"target":BUTTON_ID,"at_ms":N,"action":"press" or "release"}}, {{"target":POT_ID,"at_ms":N,"action":"set","value":0..1023}}], or [].
 To test a reaction to a button: press it at 2000 ms, add a check with "to_ms":2000 for the behavior before the press, and a check with "from_ms":2300 for the behavior after it. If the behavior lasts only while the button is held, release it at 4000 ms and end the second check with "to_ms":4000.
@@ -151,7 +163,8 @@ The circuit:
 Reply format:
 {{"circuit":{{"components":[{{"type":"led","id":"LED1","pin":13}}]}},"checks":[...],"stimulus":[...],"code":"...","behavior_summary":"one short English sentence"}}
 
-The user may write in English, Hindi, Kannada, Hinglish or Kanglish. Understand all of them. Write code comments and behavior_summary in English."""
+The user may write in English, Hindi, Kannada, Hinglish or Kanglish. Understand all of them. Write code comments and behavior_summary in English.
+The request may be a short follow-up ("slower", "yes, do that", "same but on pin 6"): read it together with the recent conversation."""
 
 FIX_SYSTEM = f"""You fix an Arduino sketch that failed to compile or failed a measured check in the simulator. Reply with JSON only:
 {{"code":"<the full corrected sketch, without the #define pin lines>","note":"one short sentence: what you changed and why"}}
@@ -167,11 +180,38 @@ FIX_CHECKS_SYSTEM = f"""The acceptance checks or stimulus for an Arduino simulat
 
 {CHECKS_DOC}"""
 
-EXPLAIN_SYSTEM = """You explain a working Arduino sketch to a beginner. Reply with JSON only:
-{"summary":"2 short sentences","walkthrough":[{"lines":"3-5","what":"what this block does","why":"why it is written this way"}],"try_next":["...","..."],"spoken_summary":"..."}
-- walkthrough: 3 to 6 blocks in order, using the line numbers shown. Say what functions like pinMode, digitalWrite, analogWrite, analogRead, delay, millis, tone or Servo do in this sketch. Plain English.
+# How every text that Timbre reads aloud must be written (the voice picks its language from the script).
+SPOKEN_RULES = ("1 or 2 short, friendly sentences that a text-to-speech voice will read aloud, in the SAME language as "
+                "the user's message. Script rules: English in Latin letters; Hindi and Hinglish in Devanagari; Kannada "
+                "and Kanglish in Kannada script. Common English device words (LED, servo, buzzer) may stay in Latin "
+                "letters. Write every number as words in that language (e.g. \"pin nine\", \"ಒಂಬತ್ತನೇ ಪಿನ್\", \"पिन नौ\"). "
+                "No code words (no millis, analogWrite, LED1_PIN), no symbols, and no words from other languages or scripts.")
+
+SUPPORTED_TEXT = ("Parts the simulator can use: LED, push button, servo, buzzer, potentiometer. "
+                  "Boards: Arduino Uno, Nano and Mega 2560.")
+
+WRITTEN_LANGUAGE = ("Write it in the language and script of the user's message: English stays English; Hinglish or "
+                    "Kanglish typed in Latin letters stays in Latin letters (never switch it to Devanagari or Kannada "
+                    "script); Hindi in Devanagari stays Devanagari; Kannada in Kannada script stays Kannada script. "
+                    "Write numbers as digits (pin 13, 2000 ms). Code, function and pin names stay exactly as written.")
+
+EXPLAIN_SYSTEM = f"""You explain a working Arduino sketch to a beginner. Reply with JSON only, like this example for an LED on pin 13:
+{{"summary":"The LED on pin 13 blinks once a second. millis() times it, so loop() never waits.","lines":[{{"line":3,"note":"LED1_PIN means pin 13, where the LED is connected."}}],"try_next":["make it blink faster","add a button on pin 2"],"spoken_summary":"The LED on pin thirteen now blinks once every second."}}
+- lines: one entry for EVERY line number listed under "Lines to explain", in order, with that number. note: one short sentence (at most about 15 words) on what that line does in this sketch, with the real values (pin 9, 500 ms, 90 degrees). For a line that starts a function or block (void loop() {{, if (...) {{), say when it runs. Say what functions like pinMode, digitalWrite, analogWrite, analogRead, delay, millis, tone or Servo do.
+- summary and notes: {WRITTEN_LANGUAGE} Only spoken_summary spells numbers out as words.
 - try_next: 2 or 3 short follow-up requests the user could say next, like "make it blink slower".
-- spoken_summary: 1 or 2 short, friendly sentences that a text-to-speech voice will read aloud, in the SAME language as the user's request. Script rules (the voice picks its language from the script): English in Latin letters; Hindi and Hinglish in Devanagari; Kannada and Kanglish in Kannada script. Common English device words (LED, servo, buzzer) may stay in Latin letters. Write every number as words in that language (e.g. "pin nine", "ಒಂಬತ್ತನೇ ಪಿನ್", "पिन नौ"). Say what the hardware now does, using the real pin numbers from the parts list. No code words (no millis, analogWrite, LED1_PIN), no symbols, and no words from other languages or scripts."""
+- spoken_summary: {SPOKEN_RULES} Say what the hardware now does. Use exactly the pin numbers in "Parts" (never a pin from try_next or from the example)."""
+
+CONVERSE_SYSTEM = f"""You are the assistant in a chat inside an Arduino simulator. The user builds a circuit on screen and talks to you by voice or text, in English, Hindi, Kannada, Hinglish or Kanglish. A separate builder writes, compiles, runs and measures the code. Decide whether the latest message needs the builder, and if not, answer it yourself. Reply with JSON only.
+
+If the user wants the hardware or the code to change in any way, reply {{"intent":"build"}}. That includes new behavior, faster or slower, adding, moving or removing a part, "do it again", "yes, do that" after you offered a change, and short follow-ups like "slower", "brighter", "on pin 6", "can you make it blink?".
+
+Otherwise reply {{"intent":"chat","reply":"...","lines":"...","spoken":"..."}}. That covers questions about the current code, circuit, wiring, test results or fixes ("explain line 7", "why millis and not delay?", "what happens when I press the button?"), general Arduino and electronics questions, greetings, thanks and "what can you do?".
+- reply: answer from the code, circuit and test results given. Refer to code as "line 12" or "lines 12-14" (the user's editor shows these numbers). Be brief: 2 to 6 short sentences or a short list of "- " lines, unless the user asks for detail (e.g. "explain everything line by line"). Put code in `backticks`. Never claim a measurement that is not in the test results. Do not write a whole new sketch here. If you are not sure whether the user wants a change, say what you would change and ask them to confirm.
+- reply language: {WRITTEN_LANGUAGE} Earlier messages may be in other languages: follow the latest message only.
+- {SUPPORTED_TEXT} If asked about anything else, say honestly that it cannot be simulated yet.
+- lines: the code lines your answer is mainly about ("7" or "12-14"), or "" if none.
+- spoken: {SPOKEN_RULES} An English message gets an English spoken line."""
 
 # Characters from scripts the speech output should never contain (CJK, Japanese, Korean, Cyrillic, Arabic).
 FOREIGN_SCRIPT = re.compile(r"[Ѐ-ӿ؀-ۿ぀-ヿ㐀-䶿一-鿿가-힯]+")
@@ -244,6 +284,68 @@ def circuit_changes(old, new):
 
 def numbered(code):
     return "\n".join(f"{i:3d}| {line}" for i, line in enumerate(code.splitlines(), 1))
+
+
+def explain_line_numbers(code):
+    """Line numbers worth a note: not blank, not only braces/brackets, not a comment-only line."""
+    out = []
+    for i, line in enumerate(code.splitlines(), 1):
+        text = line.strip()
+        if not text or re.fullmatch(r"[{}()\[\];,\s]*", text) or text.startswith(("//", "/*", "*")):
+            continue
+        out.append(i)
+    return out
+
+
+def line_by_line(code, notes):
+    """[{line, code, note}] for every explainable line. The code text comes from the sketch itself
+    (never from the LLM); notes is the LLM's [{line, note}] list (missing notes stay empty)."""
+    by_line = {}
+    for n in notes if isinstance(notes, list) else []:
+        if isinstance(n, dict) and isinstance(n.get("line"), int) and isinstance(n.get("note"), str):
+            by_line.setdefault(n["line"], n["note"].strip())
+    lines = code.splitlines()
+    return [{"line": i, "code": lines[i - 1].strip(), "note": by_line.get(i, "")} for i in explain_line_numbers(code)]
+
+
+def script_hint(text):
+    """Which alphabet the user typed in, so the model answers in the same one (it tends to switch
+    Latin-letter Hinglish to Devanagari otherwise)."""
+    # Code-mixed text (Prisma's "codemix" transcripts) keeps English device words in Latin letters,
+    # so any real Devanagari or Kannada text decides the script, even when Latin letters outnumber it.
+    native = {"Devanagari": len(re.findall(r"[ऀ-ॿ]", text or "")),
+              "Kannada": len(re.findall(r"[ಀ-೿]", text or ""))}
+    script = max(native, key=native.get)
+    if native[script] < 2:
+        return "The user's message is in Latin letters (English, or Hinglish/Kanglish typed in Latin letters): write in Latin letters."
+    return f"The user's message is in {script} script (English device words may stay in Latin letters): write in {script} script."
+
+
+def conversation_text(messages, limit=CONTEXT_MESSAGES):
+    """The last few chat messages as plain text for a prompt (long ones cut short)."""
+    rows = []
+    for m in (messages or [])[-limit:]:
+        who = "User" if m.get("role") == "user" else "Assistant"
+        text = re.sub(r"\s+", " ", m.get("text") or "").strip()
+        if m.get("kind") == "build":
+            text = f"[{'built and verified' if m.get('status') == 'passed' else 'could not build'}] {text}"
+        rows.append(f"{who}: {text[:400]}")
+    return "\n".join(rows)
+
+
+def test_results_text(state):
+    """The last build's measured results and fixes, for answering questions about them."""
+    results = (state.get("report") or {}).get("results") or []
+    if not results:
+        return "Last test results: none yet."
+    lines = [f"- {'passed' if r['ok'] else 'FAILED'}: {r['detail']}" for r in results]
+    fixes = [f"- attempt {h['attempt']} ({h['stage']}): {h['change_made']}" for h in state.get("history") or []]
+    return ("Last test results (measured in the simulator):\n" + "\n".join(lines)
+            + ("\nFixes made during that build:\n" + "\n".join(fixes) if fixes else ""))
+
+
+def append_messages(state, *new):
+    return ((state.get("messages") or []) + list(new))[-MAX_MESSAGES:]
 
 
 def is_number(x):
@@ -480,11 +582,56 @@ def run_simulation(hex_text, config):
 
 # ---------- nodes ----------
 
+def understand(state):
+    """First stop for every message: add it to the conversation, then decide build or chat.
+    A chat question is answered right here (one LLM call); a build request goes to plan_and_code."""
+    user_msg = {"role": "user", "text": state["user_text"], "via": state.get("via") or "text"}
+    update = {"messages": append_messages(state, user_msg), "reply": "", "reply_lines": ""}
+    mode = state.get("mode") or "auto"
+    if mode == "build":  # e.g. a "Try next" chip: no need to ask the model
+        return {**update, "intent": "build"}
+
+    code = state.get("full_code") or ""
+    parts = ", ".join(f"{c['id']} ({c['type']}) on pin {c['pin']}" for c in state["circuit"].get("components", [])) or "none"
+    user = (
+        f"{board_facts(get_board(state.get('board')))}\n"
+        f"Parts on screen: {parts}\n\n"
+        + (f"Current code (the numbers match the user's editor):\n{numbered(code)}\n\n" if code
+           else "Current code: none yet (nothing has been built in this session).\n\n")
+        + f"{test_results_text(state)}\n\n"
+        f"Recent conversation:\n{conversation_text(state.get('messages')) or '(none)'}\n\n"
+        f"Latest message: {state['user_text']}\n"
+        f"{script_hint(state['user_text'])}"
+        + ("\n\nThe user wants an answer, not a change: reply with intent chat." if mode == "chat" else "")
+    )
+    try:
+        out = chat_json(CONVERSE_SYSTEM, user, required_keys=("intent",))
+    except LLMError:
+        # Could not decide: treat it as a build request, which handles provider errors honestly.
+        return {**update, "intent": "build", "steps": add_step(state, "understanding", "treating it as a build request")}
+    reply = str(out.get("reply") or "").strip()
+    if out.get("intent") != "chat" or not reply:
+        return {**update, "intent": "build", "steps": add_step(state, "understanding", "a request to build")}
+    lines = str(out.get("lines") or "").strip()
+    return {**update, "intent": "chat", "reply": reply,
+            "reply_lines": lines if re.fullmatch(r"\d+(\s*-\s*\d+)?", lines) else "",
+            "spoken_summary": clean_spoken(str(out.get("spoken") or "")),
+            "steps": add_step(state, "understanding", "a question, answered")}
+
+
+# Fields one build starts fresh with. They are not reset per request, so a chat question after
+# a build can still talk about its code, test results and fixes.
+BUILD_RESET = {"attempts": 0, "history": [], "hex": "", "full_code": "", "report": {}, "explanation": {},
+               "spoken_summary": "", "last_error_norm": None, "repeat_error": False, "behavior_summary": ""}
+
+
 def plan_and_code(state):
     previous = state.get("code") or ""
+    convo = conversation_text((state.get("messages") or [])[:-1], limit=6)  # the request itself is below
     user = (
         f"Request: {state['user_text']}\n\n"
-        f"{board_facts(get_board(state.get('board')))}\n\n"
+        + (f"Recent conversation (to understand the request):\n{convo}\n\n" if convo else "")
+        + f"{board_facts(get_board(state.get('board')))}\n\n"
         f"Circuit: {json.dumps(state['circuit'])}\n\n"
         + (f"Current code (change only what the request asks for):\n{previous}" if previous
            else "Current code: none, write a new sketch.")
@@ -492,17 +639,18 @@ def plan_and_code(state):
     try:
         out = chat_json(PLAN_SYSTEM, user, required_keys=("circuit", "checks", "code"))
     except LLMError as e:
-        return {"problem": f"planning failed: {e}", "problem_stage": "plan", "fatal": not e.bad_output,
+        return {**BUILD_RESET, "problem": f"planning failed: {e}", "problem_stage": "plan", "fatal": not e.bad_output,
                 "steps": add_step(state, "planning", "failed")}
     if out.get("unsupported"):
         names = [str(x) for x in out["unsupported"]] if isinstance(out["unsupported"], list) else [str(out["unsupported"])]
-        return {"problem": f"unsupported part: {', '.join(names)}", "problem_stage": "plan", "fatal": True,
+        return {**BUILD_RESET, "problem": f"unsupported part: {', '.join(names)}", "problem_stage": "plan", "fatal": True,
                 "unsupported": names, "steps": add_step(state, "planning", f"needs a part I can't simulate yet: {', '.join(names)}")}
     note = out.get("behavior_summary", "")
     changes = circuit_changes(state.get("user_circuit"), out["circuit"])
     if changes:
         note += " | Wiring: " + "; ".join(changes)
     return {
+        **BUILD_RESET,
         "circuit": out["circuit"],
         "checks": out.get("checks", []),
         "stimulus": out.get("stimulus", []),
@@ -665,6 +813,7 @@ def explain(state):
     changes = circuit_changes(state.get("user_circuit"), state["circuit"])
     user = (
         f"User's request: {state['user_text']}\n"
+        f"{script_hint(state['user_text'])} (summary and notes)\n"
         f"Parts: {parts}\n"
         + (f"Wiring changed by the agent (mention this in summary and spoken_summary, with the reason): "
            f"{'; '.join(changes)}\n" if changes else "")
@@ -672,25 +821,27 @@ def explain(state):
         f"What the code does: {state.get('behavior_summary', '')}\n"
         f"Verified in the simulator: {'; '.join(r['detail'] for r in results)}\n"
         f"Fixes made on the way: {'; '.join(h['change_made'] for h in state.get('history', [])) or 'none'}\n\n"
-        f"Code with line numbers:\n{numbered(state['full_code'])}"
+        f"Code with line numbers:\n{numbered(state['full_code'])}\n\n"
+        f"Lines to explain: {', '.join(map(str, explain_line_numbers(state['full_code'])))}"
     )
     try:
-        out = chat_json(EXPLAIN_SYSTEM, user, required_keys=("summary", "spoken_summary"))
+        out = chat_json(EXPLAIN_SYSTEM, user, required_keys=("summary", "lines", "spoken_summary"))
     except LLMError as e:
         # The code works and is verified; a missing explanation should not hide that.
-        out = {"summary": state.get("behavior_summary", ""), "walkthrough": [], "try_next": [],
+        out = {"summary": state.get("behavior_summary", ""), "lines": [], "try_next": [],
                "spoken_summary": state.get("behavior_summary", ""), "error": str(e)}
     explanation = {
         "summary": out.get("summary", ""),
-        "walkthrough": out.get("walkthrough", []) if isinstance(out.get("walkthrough"), list) else [],
-        "try_next": out.get("try_next", []) if isinstance(out.get("try_next"), list) else [],
+        "lines": line_by_line(state["full_code"], out.get("lines")),
+        "try_next": [str(t) for t in out.get("try_next", [])][:3] if isinstance(out.get("try_next"), list) else [],
         # Added by the backend, never written by the LLM:
         "verified": results,
         "fixes_made": [{"attempt": h["attempt"], "stage": h["stage"], "change": h["change_made"]}
                        for h in state.get("history", [])],
     }
+    note = "done" if "error" not in out else f"LLM failed ({out['error'][:120]}), short version"
     return {"explanation": explanation, "spoken_summary": clean_spoken(out.get("spoken_summary", "")), "status": "passed",
-            "steps": add_step(state, "explaining", "done" if "error" not in out else "LLM failed, short version")}
+            "steps": add_step(state, "explaining", note)}
 
 
 PART_NAMES = {"led": "LEDs", "button": "push buttons", "servo": "servos", "buzzer": "buzzers",
@@ -715,7 +866,7 @@ def give_up(state):
         have = ", ".join(PART_NAMES[t] for t in sorted(COMPONENT_TYPES))
         message = f"I can't simulate {parts} yet. Right now I can use {have}."
         return {"status": "gave_up", "spoken_summary": message, "problem": message,
-                "explanation": {"summary": message, "walkthrough": [], "try_next": [], "verified": [],
+                "explanation": {"summary": message, "lines": [], "try_next": [], "verified": [],
                                 "fixes_made": []},
                 "steps": add_step(state, "give_up", f"unsupported part: {parts}")}
     if state.get("fatal"):
@@ -730,24 +881,54 @@ def give_up(state):
             spoken = f"Sorry, I could not get this working after {state.get('attempts', 0)} tries. The details are on screen."
     return {"status": "gave_up",
             "spoken_summary": spoken,
-            "explanation": {"summary": f"I could not get this working: {reason}.", "walkthrough": [],
+            "explanation": {"summary": f"I could not get this working: {reason}.", "lines": [],
                             "try_next": [], "verified": (state.get("report") or {}).get("results", []),
                             "fixes_made": [{"attempt": h["attempt"], "stage": h["stage"], "change": h["change_made"]}
                                            for h in state.get("history", [])]},
             "steps": add_step(state, "give_up", reason)}
 
 
+def build_card(state, status, steps):
+    """What the chat shows for one build. Stored in the conversation so a reloaded page can redraw it."""
+    passed = status == "passed"
+    return {
+        "status": status,
+        "explanation": state.get("explanation", {}),
+        "circuit_changes": circuit_changes(state.get("user_circuit"), state["circuit"]),
+        "behavior_summary": state.get("behavior_summary", ""),
+        "spoken_summary": state.get("spoken_summary", ""),
+        "attempts": state.get("attempts", 0),
+        "problem": None if passed else state.get("problem"),
+        "steps": steps,
+        "elapsed_ms": elapsed_ms(state),
+    }
+
+
 def make_respond(runs_conn):
     def respond(state):
+        if state.get("intent") == "chat":
+            steps = add_step(state, "done", "answered")
+            msg = {"role": "assistant", "kind": "chat", "text": state.get("reply", ""),
+                   "lines": state.get("reply_lines", ""), "spoken": state.get("spoken_summary", "")}
+            return {"steps": steps, "messages": append_messages(state, msg)}
         status = state.get("status") or "gave_up"
         db.save_run(runs_conn, state["session_id"], state["user_text"], state["circuit"],
                     state.get("full_code", ""), state.get("hex", "") if status == "passed" else "",
                     status, state.get("attempts", 0))
-        return {"status": status, "steps": add_step(state, "done", status)}
+        steps = add_step(state, "done", status)
+        card = build_card(state, status, steps)
+        msg = {"role": "assistant", "kind": "build", "status": status,
+               "text": (card["explanation"] or {}).get("summary") or card["behavior_summary"] or card["problem"] or "",
+               "card": card}
+        return {"status": status, "steps": steps, "messages": append_messages(state, msg)}
     return respond
 
 
 # ---------- routing ----------
+
+def route_intent(state):
+    return "chat" if state.get("intent") == "chat" else "build"
+
 
 def route(state):
     """After any step: continue, try a fix, or give up."""
@@ -766,12 +947,13 @@ def build_graph():
     checkpointer = SqliteSaver(sqlite3.connect(db.DB_PATH, check_same_thread=False))
 
     g = StateGraph(State)
-    for name, fn in [("plan_and_code", plan_and_code), ("preflight", preflight), ("compile", compile_node),
-                     ("verify", verify), ("fix", fix), ("explain", explain), ("give_up", give_up),
-                     ("respond", make_respond(runs_conn))]:
+    for name, fn in [("understand", understand), ("plan_and_code", plan_and_code), ("preflight", preflight),
+                     ("compile", compile_node), ("verify", verify), ("fix", fix), ("explain", explain),
+                     ("give_up", give_up), ("respond", make_respond(runs_conn))]:
         g.add_node(name, fn)
 
-    g.add_edge(START, "plan_and_code")
+    g.add_edge(START, "understand")
+    g.add_conditional_edges("understand", route_intent, {"build": "plan_and_code", "chat": "respond"})
     g.add_conditional_edges("plan_and_code", route, {"next": "preflight", "fix": "fix", "give_up": "give_up"})
     g.add_conditional_edges("preflight", route, {"next": "compile", "fix": "fix", "give_up": "give_up"})
     g.add_conditional_edges("compile", route, {"next": "verify", "fix": "fix", "give_up": "give_up"})
@@ -784,18 +966,17 @@ def build_graph():
     return g.compile(checkpointer=checkpointer)
 
 
-def stream_agent(graph, session_id, text, circuit, debug_break="", board=DEFAULT_BOARD):
-    """Run one request, yielding progress events and finally the result.
-    Fields listed in `start` are reset; the last code comes from the session checkpoint."""
+def stream_agent(graph, session_id, text, circuit, debug_break="", board=DEFAULT_BOARD, mode="auto", via="text"):
+    """Run one message, yielding progress events and finally the result.
+    Fields listed in `start` are per message. The last code, test results and the conversation come
+    from the session checkpoint; a build resets its own fields (BUILD_RESET in plan_and_code)."""
     start = {
         "session_id": session_id, "board": board, "user_text": text, "circuit": circuit,
         "user_circuit": json.loads(json.dumps(circuit)),
-        "attempts": 0, "history": [], "hex": "", "full_code": "", "report": {},
-        "explanation": {}, "spoken_summary": "",
-        "problem": None, "problem_stage": None, "fatal": False, "unsupported": [],
-        "last_error_norm": None, "repeat_error": False, "status": None,
+        "problem": None, "problem_stage": None, "fatal": False, "unsupported": [], "status": None,
         "steps": [], "started_at": time.time(),
         "debug_break": debug_break, "break_done": False,
+        "mode": mode, "via": via, "intent": "", "reply": "", "reply_lines": "",
     }
     config = {"configurable": {"thread_id": session_id}, "recursion_limit": 60}
     for update in graph.stream(start, config=config, stream_mode="updates"):
@@ -804,25 +985,38 @@ def stream_agent(graph, session_id, text, circuit, debug_break="", board=DEFAULT
                 yield {"type": "step", **values["steps"][-1]}
 
     final = graph.get_state(config).values
-    passed = final["status"] == "passed"
+    if final.get("intent") == "chat":
+        yield {"type": "result", "kind": "chat", "reply": final.get("reply", ""),
+               "lines": final.get("reply_lines", ""), "spoken_summary": final.get("spoken_summary", ""),
+               "steps": final.get("steps", []), "elapsed_ms": elapsed_ms(final)}
+        return
+    card = final["messages"][-1]["card"]
+    passed = card["status"] == "passed"
     yield {
         "type": "result",
-        "status": final["status"],
+        "kind": "build",
+        **card,
         "circuit": final["circuit"],
-        "circuit_changes": circuit_changes(final.get("user_circuit"), final["circuit"]),
         "code": final.get("code", ""),
         "full_code": final.get("full_code", ""),
         "hex": final.get("hex", "") if passed else "",
         "checks": final.get("checks", []),
         "stimulus": final.get("stimulus", []),
         "report": final.get("report", {}),
-        "behavior_summary": final.get("behavior_summary", ""),
-        "explanation": final.get("explanation", {}),
-        "spoken_summary": final.get("spoken_summary", ""),
         "history": final.get("history", []),
-        "attempts": final.get("attempts", 0),
-        "problem": None if passed else final.get("problem"),
-        "steps": final.get("steps", []),
-        "elapsed_ms": elapsed_ms(final),
         "debug_break": debug_break,
+    }
+
+
+def session_snapshot(graph, session_id):
+    """Everything a reloaded page needs to continue a session: the chat, circuit, board and code."""
+    values = graph.get_state({"configurable": {"thread_id": session_id}}).values or {}
+    builds = [m for m in values.get("messages") or [] if m.get("kind") == "build"]
+    passed = bool(builds) and builds[-1].get("status") == "passed"
+    return {
+        "messages": values.get("messages") or [],
+        "board": values.get("board") or DEFAULT_BOARD,
+        "circuit": values.get("circuit"),
+        "full_code": values.get("full_code") or "",
+        "hex": values.get("hex", "") if passed else "",
     }

@@ -1,5 +1,5 @@
-// Page logic: ask the agent (POST /run, streamed) or compile by hand (POST /compile),
-// then run the hex live and show the explanation.
+// Page logic: chat with the agent (POST /run, streamed), compile by hand (POST /compile),
+// run the hex live, and keep the session across page reloads (GET /session/<id>).
 import '@wokwi/elements'; // registers <wokwi-led>, <wokwi-servo>, <wokwi-arduino-uno>, ...
 import { startSimulation, stopSimulation } from './simulator.js';
 import { resetSignals, record, prune, drawGraph } from './signals.js';
@@ -8,6 +8,10 @@ import {
   initCircuit, getCircuit, setCircuit, setController, simSetup, graphRows,
   updateParts, resetParts, replaceDefineBlock, unlockAudio, setSound, BOARDS, setBoard, getBoardId,
 } from './circuit.js';
+import {
+  initChat, clearChat, showWelcome, addUserMessage, addChatReply, addBuildCard, addErrorMessage,
+  startPending, renderHistory,
+} from './chat.js';
 
 const API = 'http://localhost:8000';
 const DEFAULT_CIRCUIT = { components: [{ type: 'led', id: 'LED1', pin: 13 }] };
@@ -25,13 +29,14 @@ void loop() {
 
 const $ = (id) => document.getElementById(id);
 const codeBox = $('code');
+const gutter = $('gutter');
 const statusLine = $('status');
 const errorBox = $('error');
 const agentStatus = $('agentStatus');
-const stepsList = $('steps');
 const graph = $('graph');
 
 let sessionId = loadSessionId();
+let busy = false;
 
 // ---------- session id (kept in the browser so follow-ups continue the same session) ----------
 
@@ -47,6 +52,61 @@ function newSessionId() {
   const id = crypto.randomUUID();
   try { localStorage.setItem('gnani_session', id); } catch {}
   return id;
+}
+
+// ---------- code editor with line numbers ----------
+// A <textarea> has no line numbers, so a <pre> next to it lists 1, 2, 3 ... and scrolls with it.
+
+let gutterLines = 0;
+function updateGutter() {
+  const count = codeBox.value.split('\n').length;
+  if (count !== gutterLines) {
+    gutterLines = count;
+    gutter.replaceChildren(...Array.from({ length: count }, (_, i) => {
+      const n = document.createElement('span');
+      n.textContent = String(i + 1);
+      return n;
+    }));
+  }
+  gutter.scrollTop = codeBox.scrollTop;
+}
+
+function markGutter(first, last) {
+  [...gutter.children].forEach((n, i) => n.classList.toggle('hl', i + 1 >= first && i + 1 <= last));
+}
+
+function setCode(text) {
+  codeBox.value = text;
+  updateGutter();
+  markGutter(0, -1);
+}
+
+// Show lines in the editor ("12" or "12-14"): mark them in the line-number column and scroll there.
+// focus: also select them (when the user clicked a line); a chat reply only marks them, so the
+// cursor stays in the chat box. If the code has shifted since the explanation was written
+// (e.g. a part was added, so there are more #define lines), the line is found by its text.
+function highlightLines(range, codeText, { focus = true } = {}) {
+  const m = String(range).match(/(\d+)(?:\s*-\s*(\d+))?/);
+  if (!m) return;
+  const lines = codeBox.value.split('\n');
+  let first = Number(m[1]);
+  let last = Number(m[2] || m[1]);
+  if (codeText && lines[first - 1]?.trim() !== codeText) {
+    const found = lines.findIndex((l) => l.trim() === codeText);
+    if (found >= 0) { last = found + 1 + (last - first); first = found + 1; }
+  }
+  first = Math.max(1, Math.min(first, lines.length));
+  last = Math.max(first, Math.min(last, lines.length));
+  markGutter(first, last);
+  const lineHeight = parseFloat(getComputedStyle(codeBox).lineHeight) || 20;
+  codeBox.scrollTop = Math.max(0, (first - 4) * lineHeight);
+  updateGutter();
+  if (!focus) return;
+  const start = lines.slice(0, first - 1).join('\n').length + (first > 1 ? 1 : 0);
+  const end = lines.slice(0, last).join('\n').length;
+  codeBox.focus({ preventScroll: true });
+  codeBox.setSelectionRange(start, end);
+  codeBox.closest('.card').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 // ---------- simulation ----------
@@ -78,10 +138,15 @@ function showError(text) {
   errorBox.hidden = !text;
 }
 
+function showWiringNotice(text) {
+  $('wiringNotice').hidden = !text;
+  $('wiringNotice').textContent = text || '';
+}
+
 function onCircuitChange(circuit) {
   // Keep the #define lines in the editor in sync with the circuit panel.
   stop();
-  codeBox.value = replaceDefineBlock(codeBox.value, circuit);
+  setCode(replaceDefineBlock(codeBox.value, circuit));
   drawGraph(graph, graphRows(), 0);
   statusLine.textContent = 'Circuit changed. Press Compile & Run, or ask the agent.';
 }
@@ -117,40 +182,34 @@ async function compileAndRun() {
   }
 }
 
-// ---------- agent (Server-Sent Events over fetch, because EventSource cannot POST) ----------
+// ---------- chat with the agent (Server-Sent Events over fetch, because EventSource cannot POST) ----------
 
-function addStep(s) {
-  const li = document.createElement('li');
-  const allPassed = /^(\d+)\/\1 checks/.test(s.note); // "2/2 checks passed ..."
-  const bad = s.step === 'give_up' || /failed/.test(s.note)
-    || (s.step === 'verifying' && !allPassed)
-    || (s.step === 'compiling' && !/: ok$/.test(s.note))
-    || (s.step === 'preflight' && s.note !== 'ok');
-  li.className = bad ? 'bad' : s.step === 'fixing' ? 'fix' : s.step === 'verifying' ? 'good' : '';
-  const label = { planning: 'Planning', preflight: 'Checking pins', compiling: 'Compiling', verifying: 'Measuring in simulator',
-    fixing: 'Fixing', explaining: 'Explaining', give_up: 'Giving up', done: 'Done' }[s.step] || s.step;
-  li.textContent = `${label}${s.note ? ': ' + s.note : ''}  (${(s.ms / 1000).toFixed(1)} s)`;
-  stepsList.append(li);
+function setBusy(on) {
+  busy = on;
+  $('askBtn').disabled = on;
+  $('micBtn').disabled = on;
 }
 
-async function askAgent(event) {
-  event?.preventDefault();
-  const text = $('request').value.trim();
-  if (!text) return;
+// mode: "auto" (the agent decides: answer or build), "build" (a suggestion chip), "chat".
+async function askAgent(text, { mode = 'auto', via = 'text', language = '' } = {}) {
+  text = (text || '').trim();
+  if (!text || busy) return;
   unlockAudio();
-
-  $('askBtn').disabled = true;
+  setBusy(true);
+  addUserMessage(text, { via, language });
+  const pending = startPending();
   agentStatus.className = 'status';
   agentStatus.textContent = 'Agent working...';
-  $('wiringNotice').hidden = true;
-  stepsList.innerHTML = '';
   showError('');
 
   try {
     const res = await fetch(`${API}/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, text, circuit: getCircuit(), board: getBoardId(), debug_break: $('debugBreak').value }),
+      body: JSON.stringify({
+        session_id: sessionId, text, circuit: getCircuit(), board: getBoardId(),
+        debug_break: $('debugBreak').value, mode, via,
+      }),
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
@@ -168,29 +227,40 @@ async function askAgent(event) {
         buffer = buffer.slice(cut + 2);
         if (!chunk.startsWith('data: ')) continue;
         const event = JSON.parse(chunk.slice(6));
-        if (event.type === 'step') addStep(event);
-        else if (event.type === 'result') showResult(event);
+        if (event.type === 'step') pending.addStep(event);
+        else if (event.type === 'result') { pending.remove(); showResult(event); }
         else if (event.type === 'error') throw new Error(event.message);
       }
     }
   } catch (err) {
+    pending.remove();
     agentStatus.className = 'status bad';
     agentStatus.textContent = 'Agent request failed.';
-    showError(String(err));
+    addErrorMessage(err.message === 'Failed to fetch'
+      ? 'Could not reach the backend. Is uvicorn running on port 8000?' : String(err.message || err));
   } finally {
-    $('askBtn').disabled = false;
+    setBusy(false);
+    $('request').focus();
   }
 }
 
 function showResult(data) {
+  const secs = (data.elapsed_ms / 1000).toFixed(1);
+  if (data.kind === 'chat') {
+    addChatReply({ text: data.reply, lines: data.lines, spoken: data.spoken_summary });
+    agentStatus.className = 'status';
+    agentStatus.textContent = `Answered in ${secs} s.`;
+    if (data.lines) highlightLines(data.lines, undefined, { focus: false });
+    speakReply(data.spoken_summary);
+    return;
+  }
+
   setCircuit(data.circuit, { highlight: true });
   const changes = data.circuit_changes || [];
-  $('wiringNotice').hidden = !changes.length;
-  $('wiringNotice').textContent = changes.length ? `The agent changed your wiring: ${changes.join('; ')}.` : '';
-  if (data.full_code) codeBox.value = data.full_code;
-  renderExplanation(data);
+  showWiringNotice(changes.length ? `The agent changed your wiring: ${changes.join('; ')}.` : '');
+  if (data.full_code) setCode(data.full_code);
+  addBuildCard(data);
 
-  const secs = (data.elapsed_ms / 1000).toFixed(1);
   const fixes = data.attempts ? `, fixed itself ${data.attempts}x` : '';
   if (data.status === 'passed') {
     agentStatus.className = 'status good';
@@ -201,64 +271,8 @@ function showResult(data) {
     agentStatus.className = 'status bad';
     agentStatus.textContent = `The agent could not get it working (${secs} s).`;
     stop();
-    // Measured failures are already listed in the explanation panel; show raw text only otherwise.
-    if (!(data.explanation?.verified || []).length) showError(data.problem || 'unknown problem');
   }
   speakReply(data.spoken_summary);
-}
-
-// ---------- explanation panel (built with textContent: LLM text is never parsed as HTML) ----------
-
-function item(tag, text, className) {
-  const el = document.createElement(tag);
-  el.textContent = text;
-  if (className) el.className = className;
-  return el;
-}
-
-function renderExplanation(data) {
-  const ex = data.explanation || {};
-  $('explanation').hidden = false;
-  $('exSummary').textContent = ex.summary || data.behavior_summary || '';
-  $('exSpoken').textContent = data.spoken_summary ? `🔊 ${data.spoken_summary}` : '';
-
-  $('exVerified').replaceChildren(...(ex.verified || []).map((v) =>
-    item('li', `${v.ok ? '✓' : '✗'} ${v.detail}`, v.ok ? 'ok' : 'bad')));
-
-  const fixes = ex.fixes_made || [];
-  $('exFixesBox').hidden = !fixes.length;
-  $('exFixes').replaceChildren(...fixes.map((f) => item('li', `Attempt ${f.attempt} (${f.stage}): ${f.change}`)));
-
-  // Skip empty steps; show "Lines ..." only when the model gave line numbers.
-  const steps = (ex.walkthrough || []).filter((w) => w && (w.what || w.why));
-  $('exWalk').replaceChildren(...steps.map((w) => {
-    const li = document.createElement('li');
-    if (w.lines) li.append(item('span', `Lines ${w.lines}: `, 'lines'));
-    li.append(item('span', w.what || ''), item('div', w.why || '', 'why'));
-    if (w.lines) li.addEventListener('click', () => highlightLines(String(w.lines)));
-    return li;
-  }));
-
-  $('exTry').replaceChildren(...(ex.try_next || []).map((t) => {
-    const b = item('button', t, 'chip');
-    b.type = 'button';
-    b.addEventListener('click', () => { $('request').value = t; askAgent(); });
-    return b;
-  }));
-}
-
-function highlightLines(range) {
-  const m = range.match(/(\d+)(?:\s*-\s*(\d+))?/);
-  if (!m) return;
-  const lines = codeBox.value.split('\n');
-  const first = Math.max(1, Number(m[1]));
-  const last = Math.min(lines.length, Number(m[2] || m[1]));
-  const start = lines.slice(0, first - 1).join('\n').length + (first > 1 ? 1 : 0);
-  const end = lines.slice(0, last).join('\n').length;
-  codeBox.focus();
-  codeBox.setSelectionRange(start, end);
-  const lineHeight = parseFloat(getComputedStyle(codeBox).lineHeight) || 20;
-  codeBox.scrollTop = (first - 3) * lineHeight;
 }
 
 // ---------- voice: Prisma (speech-to-text) in, Timbre (text-to-speech) out ----------
@@ -266,11 +280,9 @@ function highlightLines(range) {
 const micBtn = $('micBtn');
 let replyAudio = null;
 
-function showHeard(text, language) {
-  const el = $('heard');
-  el.hidden = false;
-  if (language === undefined) el.textContent = text;
-  else el.replaceChildren(item('span', 'Heard: '), item('strong', text), item('span', language ? `  (${language})` : ''));
+function showHeard(text) {
+  $('heard').hidden = !text;
+  $('heard').textContent = text || '';
 }
 
 async function toggleMic() {
@@ -291,6 +303,8 @@ async function finishRecording() {
   micBtn.classList.remove('recording');
   micBtn.classList.add('busy');
   micBtn.textContent = '…';
+  let transcript = null;
+  let language = '';
   try {
     const { wav, seconds } = await stopRecording();
     if (seconds < 0.4) return showHeard('That was too short. Click Speak, say your request, then click Stop.');
@@ -299,18 +313,19 @@ async function finishRecording() {
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
     if (!data.transcript) return showHeard("I didn't catch anything. Please try again.");
-    showHeard(data.transcript, data.language);
-    $('request').value = data.transcript;
-    askAgent();
+    showHeard('');
+    transcript = data.transcript;
+    language = data.language || '';
   } catch (err) {
     showHeard(`Speech-to-text failed: ${err.message}`);
   } finally {
     micBtn.classList.remove('busy');
     micBtn.textContent = '🎤 Speak';
   }
+  if (transcript) askAgent(transcript, { via: 'voice', language });
 }
 
-// Read the agent's short summary aloud (never the code). One Timbre call per result.
+// Read the agent's short reply aloud (never the code). One Timbre call per reply.
 async function speakReply(text) {
   if (!text || !$('speakToggle').checked) return;
   try {
@@ -327,23 +342,57 @@ async function speakReply(text) {
     replyAudio = new Audio(URL.createObjectURL(await res.blob()));
     await replyAudio.play();
   } catch (err) {
-    $('exSpoken').append(item('span', `  (voice reply unavailable: ${err.message})`, 'caption'));
+    const last = [...document.querySelectorAll('#messages .spoken')].pop();
+    last?.append(Object.assign(document.createElement('span'), {
+      className: 'caption', textContent: `  (voice reply unavailable: ${err.message})`,
+    }));
   }
+}
+
+function replaySpeech() {
+  if (replyAudio) { replyAudio.currentTime = 0; replyAudio.play(); }
 }
 
 // ---------- session ----------
 
-function newSession() {
+function resetBench() {
   stop();
-  sessionId = newSessionId();
   setCircuit(DEFAULT_CIRCUIT);
-  codeBox.value = replaceDefineBlock(DEFAULT_BODY, DEFAULT_CIRCUIT);
-  stepsList.innerHTML = '';
-  $('explanation').hidden = true;
+  setCode(replaceDefineBlock(DEFAULT_BODY, DEFAULT_CIRCUIT));
+  showWiringNotice('');
   showError('');
+  drawGraph(graph, graphRows(), 0);
+}
+
+function newSession() {
+  sessionId = newSessionId();
+  resetBench();
+  clearChat();
+  showWelcome();
   agentStatus.className = 'status';
   agentStatus.textContent = 'New session. Ready.';
-  drawGraph(graph, graphRows(), 0);
+  statusLine.textContent = 'Ready.';
+}
+
+// After a page reload: bring back the conversation, board, circuit and code of this session.
+async function restoreSession() {
+  try {
+    const res = await fetch(`${API}/session/${encodeURIComponent(sessionId)}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!data.messages?.length) return showWelcome();
+    if (data.board && data.board !== getBoardId()) chooseBoard(data.board);
+    if (data.circuit) setCircuit(data.circuit);
+    if (data.full_code) setCode(data.full_code);
+    else setCode(replaceDefineBlock(codeBox.value, getCircuit()));
+    showWiringNotice('');
+    renderHistory(data.messages);
+    drawGraph(graph, graphRows(), 0);
+    agentStatus.textContent = 'Session restored.';
+    statusLine.textContent = data.hex ? 'Session restored. Press Compile & Run to run the last code.' : 'Session restored.';
+  } catch {
+    showWelcome(); // backend not running yet: start fresh; the session continues once it is
+  }
 }
 
 // ---------- wire up ----------
@@ -352,8 +401,14 @@ initCircuit({
   partsEl: $('parts'), addTypeEl: $('addType'), addBtn: $('addBtn'), mcuEl: $('mcu'),
   stageEl: $('stage'), boardEl: $('boardWrap'), wiresEl: $('wires'), onCircuitChange,
 });
+initChat({
+  listEl: $('messages'),
+  onLineClick: highlightLines,
+  onSuggestion: (text, mode) => askAgent(text, { mode }),
+  onReplaySpeech: replaySpeech,
+});
 setCircuit(DEFAULT_CIRCUIT);
-codeBox.value = replaceDefineBlock(DEFAULT_BODY, DEFAULT_CIRCUIT);
+setCode(replaceDefineBlock(DEFAULT_BODY, DEFAULT_CIRCUIT));
 
 // Board choice (remembered in this browser). Changing it stops the run and keeps the parts,
 // moving any part whose pin the new board does not have.
@@ -363,8 +418,7 @@ function chooseBoard(id) {
   const changes = setBoard(id);
   boardSelect.value = getBoardId();
   try { localStorage.setItem('gnani_board', getBoardId()); } catch {}
-  $('wiringNotice').hidden = !changes.length;
-  $('wiringNotice').textContent = changes.length ? `Switched board: ${changes.join('; ')}.` : '';
+  showWiringNotice(changes.length ? `Switched board: ${changes.join('; ')}.` : '');
 }
 let savedBoard = 'uno';
 try { savedBoard = localStorage.getItem('gnani_board') || 'uno'; } catch {}
@@ -373,11 +427,18 @@ boardSelect.value = getBoardId();
 boardSelect.addEventListener('change', () => chooseBoard(boardSelect.value));
 drawGraph(graph, graphRows(), 0);
 
-$('askForm').addEventListener('submit', askAgent);
+$('askForm').addEventListener('submit', (event) => {
+  event.preventDefault();
+  const text = $('request').value;
+  $('request').value = '';
+  askAgent(text);
+});
+codeBox.addEventListener('input', updateGutter);
+codeBox.addEventListener('scroll', () => { gutter.scrollTop = codeBox.scrollTop; });
 $('runBtn').addEventListener('click', compileAndRun);
 $('stopBtn').addEventListener('click', () => { stop(); statusLine.textContent = 'Stopped.'; });
 $('newSessionBtn').addEventListener('click', newSession);
 $('soundToggle').addEventListener('change', (e) => setSound(e.target.checked));
 micBtn.addEventListener('click', toggleMic);
-$('exSpoken').title = 'Click to hear it again';
-$('exSpoken').addEventListener('click', () => { if (replyAudio) { replyAudio.currentTime = 0; replyAudio.play(); } });
+
+restoreSession();

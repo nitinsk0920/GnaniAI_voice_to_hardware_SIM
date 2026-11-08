@@ -7,7 +7,7 @@
   {"eval": "document.querySelector('#request').value='make the LED breathe, and when I press the button keep it fully on'; document.querySelector('#askBtn').click(); 'asked'"},
   {"waitFor": "/Verified|could not|failed/.test(document.querySelector('#agentStatus').textContent)", "timeout": 150000},
   {"sleep": 1500},
-  {"eval": "({agent: document.querySelector('#agentStatus').textContent, notice: document.querySelector('#wiringNotice').hidden ? '' : document.querySelector('#wiringNotice').textContent, steps: [...document.querySelectorAll('#steps li')].map(l=>l.textContent.slice(0,120)), verified: [...document.querySelectorAll('#exVerified li')].map(l=>l.textContent)})", "print": "agent on Mega"},
+  {"eval": "({agent: document.querySelector('#agentStatus').textContent, notice: document.querySelector('#wiringNotice').hidden ? '' : document.querySelector('#wiringNotice').textContent, steps: [...([...document.querySelectorAll('#messages .msg.build')].pop()?.querySelectorAll('.how li')||[])].map(l=>l.textContent.slice(0,120)), verified: [...([...document.querySelectorAll('#messages .msg.build')].pop()?.querySelectorAll('.verified li')||[])].map(l=>l.textContent)})", "print": "agent on Mega"},
   {"eval": "document.querySelector('wokwi-pushbutton').dispatchEvent(new Event('button-press')); 'pressed'", "sleep": 1200},
   {"eval": "({ledBrightness: +document.querySelector('wokwi-led').brightness.toFixed(2)})", "print": "button held on pin 30 (expect 1)"},
   {"shot": "mega-agent.png"}

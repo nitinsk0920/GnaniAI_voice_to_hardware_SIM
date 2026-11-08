@@ -11,78 +11,45 @@
     <header>
       <div>
         <h1>Voice-to-Hardware Simulator</h1>
-        <p class="hint">Build a circuit, tell the agent what it should do. It writes the Arduino code, runs it, measures the pins, and fixes itself until it works.</p>
+        <p class="hint">Build a circuit, then chat with the agent. It writes the Arduino code, runs it, measures the pins, fixes itself until it works, and explains every line.</p>
       </div>
       <div class="header-actions">
-        <label class="toggle" title="Read the agent's short summary aloud with Gnani Timbre (uses credits)"><input id="speakToggle" type="checkbox" checked /> Speak replies</label>
+        <label class="toggle" title="Read the agent's short replies aloud with Gnani Timbre (uses credits)"><input id="speakToggle" type="checkbox" checked /> Speak replies</label>
         <label class="toggle" title="Buzzer sound in the simulator"><input id="soundToggle" type="checkbox" checked /> Buzzer sound</label>
         <button id="newSessionBtn" class="secondary">New session</button>
       </div>
     </header>
 
-    <section class="card agent">
-      <form id="askForm">
-        <button id="micBtn" type="button" class="mic" title="Click to speak, click again to send">🎤 Speak</button>
-        <input id="request" type="text" placeholder="Speak, or type e.g. make the LED on pin 9 breathe" autocomplete="off" />
-        <button id="askBtn" type="submit">Ask agent</button>
-      </form>
-      <div id="heard" class="heard" hidden></div>
-      <label class="dev">Dev test:
-        <select id="debugBreak">
-          <option value="">off</option>
-          <option value="compile">break the first compile</option>
-          <option value="timing">timing bug (4x too slow, fails the measurement)</option>
-        </select>
-      </label>
-      <div id="agentStatus" class="status">Ready.</div>
-      <div id="wiringNotice" class="notice" hidden></div>
-      <ol id="steps"></ol>
-    </section>
+    <div class="workspace">
+      <div class="bench">
+        <section class="card">
+          <div class="circuit-head">
+            <h2>Circuit <select id="boardSelect" title="Board"></select></h2>
+            <div class="add-part">
+              <select id="addType"></select>
+              <button id="addBtn" class="secondary">Add part</button>
+            </div>
+          </div>
+          <div id="wiringNotice" class="notice" hidden></div>
+          <div id="stage" class="stage">
+            <div id="parts"></div>
+            <div id="boardWrap" class="board" data-board="uno"><wokwi-arduino-uno id="mcu"></wokwi-arduino-uno></div>
+            <svg id="wires" aria-hidden="true"></svg>
+          </div>
+          <p class="caption">Click buttons and turn knobs while the code runs. "~" marks PWM pins (needed for fading, brightness and other analogWrite effects). Wires: colored = signal, red = 5V, black = GND.</p>
+        </section>
 
-    <section class="card">
-      <div class="circuit-head">
-        <h2>Circuit <select id="boardSelect" title="Board"></select></h2>
-        <div class="add-part">
-          <select id="addType"></select>
-          <button id="addBtn" class="secondary">Add part</button>
-        </div>
-      </div>
-      <div id="stage" class="stage">
-        <div id="parts"></div>
-        <div id="boardWrap" class="board" data-board="uno"><wokwi-arduino-uno id="mcu"></wokwi-arduino-uno></div>
-        <svg id="wires" aria-hidden="true"></svg>
-      </div>
-      <p class="caption">Click buttons and turn knobs while the code runs. "~" marks PWM pins (needed for fading, brightness and other analogWrite effects). Wires: colored = signal, red = 5V, black = GND.</p>
-    </section>
-
-    <main>
-      <div class="column">
         <section class="card">
           <h2>Signals <span id="simTime" class="caption"></span></h2>
           <canvas id="graph"></canvas>
         </section>
-      </div>
-
-      <div class="column">
-        <section id="explanation" class="card" hidden>
-          <h2>What the agent built</h2>
-          <p id="exSummary" class="summary"></p>
-          <p id="exSpoken" class="spoken"></p>
-          <h3>Verified in the simulator</h3>
-          <ul id="exVerified" class="verified"></ul>
-          <div id="exFixesBox">
-            <h3>Fixed along the way</h3>
-            <ul id="exFixes" class="fixes"></ul>
-          </div>
-          <h3>How the code works <span class="caption">(click a step to highlight its lines)</span></h3>
-          <ol id="exWalk" class="walk"></ol>
-          <h3>Try next</h3>
-          <div id="exTry" class="chips"></div>
-        </section>
 
         <section class="card">
           <h2>Code</h2>
-          <textarea id="code" spellcheck="false"></textarea>
+          <div class="editor">
+            <pre id="gutter" aria-hidden="true"></pre>
+            <textarea id="code" spellcheck="false" wrap="off"></textarea>
+          </div>
           <div class="controls">
             <button id="runBtn">Compile &amp; Run</button>
             <button id="stopBtn" class="secondary">Stop</button>
@@ -91,7 +58,30 @@
           <pre id="error" hidden></pre>
         </section>
       </div>
-    </main>
+
+      <aside class="card chat" aria-label="Chat with the agent">
+        <div class="chat-head">
+          <h2>Chat with the agent</h2>
+          <div id="agentStatus" class="status">Ready.</div>
+        </div>
+        <div id="messages" class="messages" aria-live="polite"></div>
+        <div class="composer">
+          <div id="heard" class="heard" hidden></div>
+          <form id="askForm">
+            <button id="micBtn" type="button" class="mic" title="Click to speak, click again to send">🎤 Speak</button>
+            <input id="request" type="text" placeholder="Ask anything, or say what the circuit should do" autocomplete="off" maxlength="1000" />
+            <button id="askBtn" type="submit">Send</button>
+          </form>
+          <label class="dev">Dev test:
+            <select id="debugBreak">
+              <option value="">off</option>
+              <option value="compile">break the first compile</option>
+              <option value="timing">timing bug (4x too slow, fails the measurement)</option>
+            </select>
+          </label>
+        </div>
+      </aside>
+    </div>
 
     <script type="module" src="/main.js"></script>
   </body>
