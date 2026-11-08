@@ -86,8 +86,8 @@ It produces `out\blink.ino.hex` (about 2.6 KB). **Use `blink.ino.hex`, never the
 
 Install (then restart VS Code and PowerShell so PATH changes apply):
 1. Git (`git --version`)
-2. Node.js LTS 20 or newer (`node -v`)
-3. Python 3.12 from python.org, with "Add to PATH" ticked (`py -3.12 --version`)
+2. Node.js 24 LTS (`node -v`). Minimum is **20.19 or 22.12** (Vite 8 and avr8js refuse older; 22.11 is too old). The original laptop ran v24.14.1.
+3. Python 3.12 from python.org, with "Add to PATH" ticked (`py -3.12 --version`). It can sit next to a newer Python (e.g. 3.14); the venv must be created with `py -3.12` (the tested version is 3.12.10).
 4. arduino-cli, placed in a folder on PATH (`arduino-cli version`), then once: `arduino-cli core install arduino:avr`
 
 Then:
