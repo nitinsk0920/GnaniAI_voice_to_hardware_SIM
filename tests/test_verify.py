@@ -4,17 +4,18 @@ import sys, time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 import graph as g
+UNO, NANO = g.BOARDS["uno"], g.BOARDS["nano"]
 from compiler import compile_sketch
 from evaluator import evaluate
 
-def verify(name, comps, checks, stimulus, code, expect_pass):
+def verify(name, comps, checks, stimulus, code, expect_pass, board=UNO):
     circuit = {"components": comps}
-    assert g.check_circuit(circuit) is None
-    p = g.check_checks(checks, stimulus, circuit) or g.check_code(code, circuit)
+    assert g.check_circuit(circuit, board) is None
+    p = g.check_checks(checks, stimulus, circuit) or g.check_code(code, circuit, board)
     assert p is None, p
-    r = compile_sketch(g.define_block(circuit) + code)
+    r = compile_sketch(g.define_block(circuit) + code, fqbn=board["fqbn"])
     assert r["ok"], r["error"]
-    cfg, resolved = g.sim_config(circuit, checks, stimulus)
+    cfg, resolved = g.sim_config(circuit, checks, stimulus, board)
     t = time.perf_counter()
     m, err = g.run_simulation(r["hex"], cfg)
     assert not err, err
@@ -65,5 +66,15 @@ results.append(verify("pot controls brightness", pot,
      {"type": "duty", "target": "LED1", "min": 0.85, "max": 1.0, "after_ms": 2200}],
     [{"target": "POT1", "at_ms": 500, "action": "set", "value": 0}, {"target": "POT1", "at_ms": 2000, "action": "set", "value": 1023}],
     "void setup(){pinMode(LED1_PIN,OUTPUT);} void loop(){analogWrite(LED1_PIN, analogRead(POT1_PIN)/4);}", True))
+
+# Arduino Nano (compiled with arduino:avr:nano), including the Nano-only analog pin A6.
+results.append(verify("NANO: slow blink", LED13, blink2s, [],
+    "void setup(){pinMode(LED1_PIN,OUTPUT);} void loop(){digitalWrite(LED1_PIN,HIGH);delay(1000);digitalWrite(LED1_PIN,LOW);delay(1000);}", True, NANO))
+nano_pot = LED9 + [{"type": "potentiometer", "id": "POT1", "pin": "A6"}]
+results.append(verify("NANO: pot on A6 controls brightness", nano_pot,
+    [{"type": "duty", "target": "LED1", "min": 0.0, "max": 0.1, "from_ms": 700, "to_ms": 1900},
+     {"type": "duty", "target": "LED1", "min": 0.85, "max": 1.0, "from_ms": 2200}],
+    [{"target": "POT1", "at_ms": 500, "action": "set", "value": 0}, {"target": "POT1", "at_ms": 2000, "action": "set", "value": 1023}],
+    "void setup(){pinMode(LED1_PIN,OUTPUT);} void loop(){analogWrite(LED1_PIN, analogRead(POT1_PIN)/4);}", True, NANO))
 
 print("\nALL AS EXPECTED" if all(results) else "\nSOME RESULTS WERE NOT AS EXPECTED")

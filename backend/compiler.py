@@ -11,8 +11,8 @@ MAX_ERROR_LINES = 15
 LIBRARIES_DIR = Path(__file__).resolve().parent.parent / "arduino" / "libraries"
 
 
-def compile_sketch(code, line_offset=0):
-    """Compile code for the Uno. Returns {ok: True, hex} or {ok: False, error}.
+def compile_sketch(code, line_offset=0, fqbn=FQBN):
+    """Compile code for a board (default: Uno). Returns {ok: True, hex} or {ok: False, error}.
 
     line_offset: number of lines the backend prepended (the #define block).
     Error line numbers are shifted back so they match the code the LLM wrote.
@@ -30,7 +30,7 @@ def compile_sketch(code, line_offset=0):
 
         try:
             result = subprocess.run(
-                [cli, "compile", "--fqbn", FQBN, "--libraries", str(LIBRARIES_DIR),
+                [cli, "compile", "--fqbn", fqbn, "--libraries", str(LIBRARIES_DIR),
                  "--output-dir", str(out_dir), str(sketch_dir)],
                 capture_output=True, text=True, timeout=60,
             )

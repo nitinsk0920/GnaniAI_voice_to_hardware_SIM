@@ -122,7 +122,7 @@ D:\gnani\
   out\                            manual test output (ignore)
   backend\
     main.py                       FastAPI app and routes
-    board_uno.json                Uno pin map (Phase 2; shared with verify.mjs and the browser)
+    boards\uno.json, nano.json    board profiles: compiler fqbn, picture, power pins, pin map (shared with the browser)
     compiler.py                   arduino-cli wrapper
     llm.py                        one function that calls the LLM provider (Phase 2)
     gnani.py                      Prisma and Timbre calls (Phase 4)
@@ -246,6 +246,7 @@ function loadHex(source, target) {
 | Phase 2 | Done (Nov 7): LangGraph loop plan_and_code, preflight, compile, fix, give_up, respond; SQLite checkpoint follow-ups; dev switch `debug_break`; tested in EN/HI/KN/Hinglish/Kanglish |
 | Phase 3 | Done (Nov 8): headless verify + evaluator, explain node, SSE streaming, circuit panel (Uno, LED, button, servo, buzzer, potentiometer, pin dropdowns), live signal graph, dev modes `compile` and `timing` |
 | Phase 4 | Done (Nov 8): `gnani.py`, `/transcribe`, `/speak`, browser WAV recorder (`sim/voice.js`), mic button, transcript line, spoken replies. Live-tested: Prisma exact on English clip (0.5-3.4 s), Timbre EN/HI/KN MP3s (2.6-5.4 s), full voice loop verified in headless Edge with a fake mic. Still to do by the user: real-mic test and listening to Hindi/Kannada quality (`out/voice-test/*.mp3`) |
+| Boards | Nov 9: board profiles (`backend/boards/*.json`). **Uno and Nano done** (Nano A6/A7 analog-only, tested in `tests/test_verify.py` and `tests/ui_nano.json`). Next: Mega 2560 (avr8js has ports A-L but no timer3/4/5 configs; 2560 interrupt vectors differ, so custom timer configs are needed), then Raspberry Pi Pico (rp2040js; bootrom not in the npm package; needs the arduino-pico core). ESP32/STM32: no open-source engine, Wokwi CI parked by the user |
 | Phase 5 | Next: polish and demo |
 
 Phase 4 notes (from docs.gnani.ai, Nov 8):

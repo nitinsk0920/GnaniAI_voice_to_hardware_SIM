@@ -1,0 +1,14 @@
+[
+  {"eval": "localStorage.removeItem('gnani_board'); document.querySelector('#newSessionBtn').click(); const s=document.querySelector('#boardSelect'); s.value='nano'; s.dispatchEvent(new Event('change')); for (const t of ['button','potentiometer']) { document.querySelector('#addType').value=t; document.querySelector('#addBtn').click(); } 'nano + parts'", "sleep": 800},
+  {"eval": "({board: document.querySelector('#mcu').tagName, wires: document.querySelectorAll('#wires path').length, potPins: [...document.querySelectorAll('.part-potentiometer select option')].map(o=>o.value).join(','), parts: [...document.querySelectorAll('.part-label strong')].map(e=>e.textContent+':'+e.nextSibling.value).join(', ')})", "print": "nano circuit"},
+  {"eval": "(()=>{const s=document.querySelector('.part-potentiometer select'); s.value='A6'; s.dispatchEvent(new Event('change')); return document.querySelector('#code').value.split('\\n').slice(1,4).join(' | ')})()", "print": "pot moved to A6, defines"},
+  {"shot": "nano-circuit.png"},
+  {"eval": "document.querySelector('#speakToggle').checked=false; document.querySelector('#request').value='make the LED brightness follow the potentiometer knob'; document.querySelector('#askBtn').click(); 'asked'"},
+  {"waitFor": "/Verified|could not|failed/.test(document.querySelector('#agentStatus').textContent)", "timeout": 150000},
+  {"sleep": 1500},
+  {"eval": "({agent: document.querySelector('#agentStatus').textContent, notice: document.querySelector('#wiringNotice').hidden ? '' : document.querySelector('#wiringNotice').textContent, steps: [...document.querySelectorAll('#steps li')].map(l=>l.textContent.slice(0,110)), verified: [...document.querySelectorAll('#exVerified li')].map(l=>l.textContent)})", "print": "agent on nano"},
+  {"eval": "(()=>{const p=document.querySelector('wokwi-potentiometer'); p.value=900; p.dispatchEvent(new InputEvent('input')); return 'knob 900'})()", "sleep": 1200},
+  {"eval": "({ledBrightness: +document.querySelector('wokwi-led').brightness.toFixed(2)})", "print": "LED brightness with knob at 900 (expect high)"},
+  {"shot": "nano-agent.png"},
+  {"eval": "(()=>{const s=document.querySelector('#boardSelect'); s.value='uno'; s.dispatchEvent(new Event('change')); return {board: document.querySelector('#mcu').tagName, notice: document.querySelector('#wiringNotice').textContent}})()", "print": "switch back to Uno (pot on A6 must move)"}
+]

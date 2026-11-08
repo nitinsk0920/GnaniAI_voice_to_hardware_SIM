@@ -41,7 +41,7 @@
 
     <section class="card">
       <div class="circuit-head">
-        <h2>Circuit</h2>
+        <h2>Circuit <select id="boardSelect" title="Board"></select></h2>
         <div class="add-part">
           <select id="addType"></select>
           <button id="addBtn" class="secondary">Add part</button>
@@ -49,7 +49,7 @@
       </div>
       <div id="stage" class="stage">
         <div id="parts"></div>
-        <div id="boardWrap" class="board"><wokwi-arduino-uno id="uno"></wokwi-arduino-uno></div>
+        <div id="boardWrap" class="board" data-board="uno"><wokwi-arduino-uno id="mcu"></wokwi-arduino-uno></div>
         <svg id="wires" aria-hidden="true"></svg>
       </div>
       <p class="caption">Click buttons and turn knobs while the code runs. "~" marks PWM pins (needed for fading, brightness and other analogWrite effects). Wires: colored = signal, red = 5V, black = GND.</p>

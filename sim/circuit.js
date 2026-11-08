@@ -1,16 +1,23 @@
-// Circuit panel: draws the Uno and the parts, lets the user add/remove parts and pick pins,
+// Circuit panel: draws the board and the parts, lets the user add/remove parts and pick pins,
 // and connects each part to the running simulation (clicks, knob, servo angle, buzzer sound).
-import board from '../backend/board_uno.json'; // shared pin map: pin -> port, bit, pwm
+// Board profiles (pin map, picture, power pins) are shared with the backend: backend/boards/*.json
+import uno from '../backend/boards/uno.json';
+import nano from '../backend/boards/nano.json';
 import { record, duty, lastPulseMs, frequency } from './signals.js';
 
-const DIGITAL = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
-const ANALOG = ['A0', 'A1', 'A2', 'A3', 'A4', 'A5'];
+export const BOARDS = { uno, nano };
+let board = uno;
+
+// Which pins each part type may use on the current board.
+const numberPins = () => Object.entries(board.pins).filter(([p, i]) => /^\d+$/.test(p) && i.port && !i.reserved).map(([p]) => Number(p));
+const portAnalogPins = () => Object.entries(board.pins).filter(([p, i]) => i.analog && i.port).map(([p]) => p);
+const analogPins = () => Object.entries(board.pins).filter(([, i]) => i.analog).map(([p]) => p);
 export const PART_TYPES = {
-  led:           { label: 'LED',           prefix: 'LED',    pins: DIGITAL, prefer: [13, 9, 10, 11, 12, 8, 7, 6, 5, 4, 3, 2] },
-  button:        { label: 'Push button',   prefix: 'BUTTON', pins: [...DIGITAL, ...ANALOG], prefer: [2, 3, 4, 7, 8, 12] },
-  servo:         { label: 'Servo',         prefix: 'SERVO',  pins: DIGITAL, prefer: [6, 5, 3, 10, 9, 11] },
-  buzzer:        { label: 'Buzzer',        prefix: 'BUZZER', pins: DIGITAL, prefer: [8, 7, 4, 12] },
-  potentiometer: { label: 'Potentiometer', prefix: 'POT',    pins: ANALOG,  prefer: ANALOG },
+  led:           { label: 'LED',           prefix: 'LED',    pins: numberPins, prefer: [13, 9, 10, 11, 12, 8, 7, 6, 5, 4, 3, 2] },
+  button:        { label: 'Push button',   prefix: 'BUTTON', pins: () => [...numberPins(), ...portAnalogPins()], prefer: [2, 3, 4, 7, 8, 12] },
+  servo:         { label: 'Servo',         prefix: 'SERVO',  pins: numberPins, prefer: [6, 5, 3, 10, 9, 11] },
+  buzzer:        { label: 'Buzzer',        prefix: 'BUZZER', pins: numberPins, prefer: [8, 7, 4, 12] },
+  potentiometer: { label: 'Potentiometer', prefix: 'POT',    pins: analogPins, prefer: ['A0', 'A1', 'A2', 'A3'] },
 };
 const LED_COLORS = ['red', 'green', 'blue', 'yellow', 'orange', 'white'];
 const GRAPH_COLORS = ['#d9480f', '#2b8a3e', '#1971c2', '#ae3ec9', '#e67700', '#0c8599', '#c2255c'];
@@ -41,8 +48,8 @@ export function replaceDefineBlock(code, c) {
 
 // ---------- drawing and editing ----------
 
-export function initCircuit({ partsEl, addTypeEl, addBtn, unoEl, stageEl, boardEl, wiresEl, onCircuitChange }) {
-  ui = { partsEl, addTypeEl, unoEl, stageEl, boardEl, wiresEl };
+export function initCircuit({ partsEl, addTypeEl, addBtn, mcuEl, stageEl, boardEl, wiresEl, onCircuitChange }) {
+  ui = { partsEl, addTypeEl, mcuEl, stageEl, boardEl, wiresEl };
   onChange = onCircuitChange;
   for (const [type, info] of Object.entries(PART_TYPES)) addTypeEl.append(new Option(info.label, type));
   addBtn.addEventListener('click', () => addPart(addTypeEl.value));
@@ -70,15 +77,46 @@ export function setCircuit(c, { highlight = false } = {}) {
   return changedIds;
 }
 
+export const getBoardId = () => board.id;
+
+// Switch board: swap the picture, and move any part whose pin this board lacks to a free valid pin.
+// Returns plain sentences describing the moves (shown to the user).
+export function setBoard(id) {
+  board = BOARDS[id] || uno;
+  const el = document.createElement(board.element);
+  el.id = 'mcu';
+  ui.mcuEl.replaceWith(el);
+  ui.mcuEl = el;
+  ui.boardEl.dataset.board = board.id;
+
+  const changes = [];
+  for (const c of [...circuit.components]) {
+    const valid = PART_TYPES[c.type].pins().map(String);
+    if (valid.includes(String(c.pin))) continue;
+    const used = usedPins(c.id);
+    const free = valid.find((p) => !used.has(p));
+    if (free === undefined) {
+      circuit.components = circuit.components.filter((p) => p.id !== c.id);
+      changes.push(`removed ${c.id} (no free pin for it on the ${board.name})`);
+    } else {
+      changes.push(`moved ${c.id} from pin ${c.pin} to pin ${free}`);
+      c.pin = /^\d+$/.test(free) ? Number(free) : free;
+    }
+  }
+  draw();
+  onChange(getCircuit());
+  return changes;
+}
+
 // ---------- wires (drawing only; the circuit spec is what the simulator uses) ----------
 
 const SIG = 'SIG';
 const PART_WIRES = { // [part pin name, Uno pin name or SIG for the part's own Arduino pin]
-  led:           [['A', SIG], ['C', 'GND.1']],
-  button:        [['1.l', SIG], ['2.r', 'GND.1']],
-  servo:         [['PWM', SIG], ['V+', '5V'], ['GND', 'GND.1']],
-  buzzer:        [['2', SIG], ['1', 'GND.1']],
-  potentiometer: [['SIG', SIG], ['VCC', '5V'], ['GND', 'GND.1']],
+  led:           [['A', SIG], ['C', 'GND']],
+  button:        [['1.l', SIG], ['2.r', 'GND']],
+  servo:         [['PWM', SIG], ['V+', 'VCC'], ['GND', 'GND']],
+  buzzer:        [['2', SIG], ['1', 'GND']],
+  potentiometer: [['SIG', SIG], ['VCC', 'VCC'], ['GND', 'GND']],
 };
 const LANE = 6; // px between parallel wires
 
@@ -93,14 +131,15 @@ function pinPos(el, name, stageRect) {
 }
 
 function drawWires() {
-  const { stageEl, wiresEl, unoEl, boardEl } = ui;
-  if (!stageEl || !unoEl.pinInfo) return;
+  const { stageEl, wiresEl, mcuEl, boardEl } = ui;
+  if (!stageEl || !mcuEl.pinInfo) return;
   const wires = [];
   circuit.components.forEach((c, i) => {
     const el = parts[c.id]?.el;
-    for (const [partPin, unoPin] of PART_WIRES[c.type] || []) {
-      const name = unoPin === SIG ? String(c.pin) : unoPin;
-      const color = unoPin === SIG ? GRAPH_COLORS[i % GRAPH_COLORS.length] : name === '5V' ? '#d6336c' : '#222';
+    for (const [partPin, boardPin] of PART_WIRES[c.type] || []) {
+      // SIG = the part's own pin; GND and VCC map to this board's power pin names.
+      const name = boardPin === SIG ? String(c.pin) : boardPin === 'GND' ? board.gnd_pin : board.vcc_pin;
+      const color = boardPin === SIG ? GRAPH_COLORS[i % GRAPH_COLORS.length] : boardPin === 'VCC' ? '#d6336c' : '#222';
       wires.push({ el, partPin, unoPin: name, color });
     }
   });
@@ -110,27 +149,27 @@ function drawWires() {
   const stage = stageEl.getBoundingClientRect();
   wiresEl.setAttribute('width', stage.width);
   wiresEl.setAttribute('height', stage.height);
-  const board = unoEl.getBoundingClientRect();
-  const boardTop = board.top - stage.top;
-  const boardRight = board.right - stage.left;
-  const boardBottom = board.bottom - stage.top;
+  const rect = mcuEl.getBoundingClientRect();
+  const boardTop = rect.top - stage.top;
+  const boardRight = rect.right - stage.left;
+  const boardBottom = rect.bottom - stage.top;
 
   // Resolve both ends, then give the shortest wires the lanes nearest the board (fewer crossings).
   const resolved = wires
-    .map((w) => ({ ...w, from: pinPos(unoEl, w.unoPin, stage), to: w.el && pinPos(w.el, w.partPin, stage) }))
+    .map((w) => ({ ...w, from: pinPos(mcuEl, w.unoPin, stage), to: w.el && pinPos(w.el, w.partPin, stage) }))
     .filter((w) => w.from && w.to)
     .sort((a, b) => Math.abs(a.to.x - a.from.x) - Math.abs(b.to.x - b.from.x));
 
   // Room under the board for the wires that go around it (5V and analog pins).
-  const aroundCount = resolved.filter((w) => w.from.y > boardTop + board.height / 2).length;
+  const aroundCount = resolved.filter((w) => w.from.y > boardTop + rect.height / 2).length;
   boardEl.style.marginBottom = `${aroundCount ? 14 + aroundCount * LANE : 0}px`;
 
   let rightLane = 0;
   const paths = resolved.map((w, k) => {
     const lane = boardTop - 12 - k * LANE;
     let d = `M${w.from.x},${w.from.y}`;
-    if (w.from.y > boardTop + board.height / 2) {
-      // Bottom header (5V, A0-A5): go down, around the right side of the board, then up.
+    if (w.from.y > boardTop + rect.height / 2) {
+      // Bottom header (5V, analog pins): go down, around the right side of the board, then up.
       const below = boardBottom + 8 + rightLane * LANE;
       const side = boardRight + 10 + rightLane * LANE;
       rightLane++;
@@ -164,7 +203,7 @@ function usedPins(exceptId) {
 function addPart(type) {
   const info = PART_TYPES[type];
   const used = usedPins();
-  const pin = [...info.prefer, ...info.pins].find((p) => !used.has(String(p)));
+  const pin = [...info.prefer.filter((p) => info.pins().map(String).includes(String(p))), ...info.pins()].find((p) => !used.has(String(p)));
   if (pin === undefined) return alert(`No free pin left for a ${info.label}.`);
   let n = 1;
   while (circuit.components.some((p) => p.id === `${info.prefix}${n}`)) n++;
@@ -186,7 +225,7 @@ function makeElement(c, index) {
     el.value = c.value ?? 512;
     el.addEventListener('input', () => {
       c.value = Number(el.value);
-      controller?.setAnalog(pinInfo(c.pin).bit, (c.value / 1023) * 5);
+      controller?.setAnalog(pinInfo(c.pin).adc, (c.value / 1023) * 5);
     });
   }
   return el;
@@ -215,7 +254,7 @@ function draw() {
     const select = document.createElement('select');
     select.title = 'Pin';
     const used = usedPins(c.id);
-    for (const p of PART_TYPES[c.type].pins) {
+    for (const p of PART_TYPES[c.type].pins()) {
       const pwm = pinInfo(p).pwm ? ' ~' : '';
       const opt = new Option(`pin ${p}${pwm}`, p, false, String(p) === String(c.pin));
       opt.disabled = used.has(String(p));
@@ -248,7 +287,7 @@ function draw() {
 
 export function setController(ctrl) {
   controller = ctrl;
-  ui.unoEl.ledPower = !!ctrl;
+  ui.mcuEl.ledPower = !!ctrl;
 }
 
 // What the simulator should watch and drive for this circuit.
@@ -259,7 +298,7 @@ export function simSetup() {
     watch: watchPins.map((pin) => ({ pin, ...pinInfo(pin) })),
     inputs: circuit.components.filter((c) => c.type === 'button').map((c) => ({ ...pinInfo(c.pin), level: true })),
     analog: circuit.components.filter((c) => c.type === 'potentiometer')
-      .map((c) => ({ channel: pinInfo(c.pin).bit, volts: ((c.value ?? 512) / 1023) * 5 })),
+      .map((c) => ({ channel: pinInfo(c.pin).adc, volts: ((c.value ?? 512) / 1023) * 5 })),
   };
 }
 
@@ -289,7 +328,7 @@ export function updateParts(nowMs) {
       toneHz ||= f;
     }
   }
-  ui.unoEl.led13 = duty(13, nowMs - 20, nowMs) > 0.5;
+  ui.mcuEl.led13 = duty(13, nowMs - 20, nowMs) > 0.5;
   setTone(toneHz);
 }
 
@@ -298,7 +337,7 @@ export function resetParts() {
     if (c.type === 'led') el.value = false;
     if (c.type === 'buzzer') el.hasSignal = false;
   }
-  ui.unoEl.led13 = false;
+  ui.mcuEl.led13 = false;
   setController(null);
   setTone(0);
 }

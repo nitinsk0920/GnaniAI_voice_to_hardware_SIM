@@ -52,7 +52,7 @@ export function createAvr(hex) {
 }
 
 // Start a live simulation in the browser.
-// watch:  [{pin, port: "B"|"C"|"D", bit}] output pins to report (positions from board_uno.json)
+// watch:  [{pin, port: "B"|"C"|"D", bit}] output pins to report (positions from backend/boards/*.json)
 // inputs: [{port, bit, level}] buttons; avr8js does not model pull-ups, so a released button is driven HIGH
 // analog: [{channel, volts}] potentiometers
 // onPin(pin, isHigh, simMs) fires on every change; onTime(simMs) once per frame.

@@ -42,6 +42,13 @@ GRAPH = agent.build_graph()
 
 class CompileRequest(BaseModel):
     code: str
+    board: str = agent.DEFAULT_BOARD
+
+
+def board_or_400(board_id):
+    if board_id not in agent.BOARDS:
+        raise HTTPException(status_code=400, detail=f"unknown board '{board_id}' (have: {sorted(agent.BOARDS)})")
+    return agent.BOARDS[board_id]
 
 
 class RunRequest(BaseModel):
@@ -51,6 +58,7 @@ class RunRequest(BaseModel):
     # Dev switch: "compile" breaks the code before the first compile; "timing" makes it 4x too slow
     # so the measured check fails. true is accepted as "compile" (Phase 2 clients).
     debug_break: Union[bool, Literal["", "compile", "timing"]] = ""
+    board: str = agent.DEFAULT_BOARD
 
 
 @app.get("/health")
@@ -98,6 +106,11 @@ def speak_route(req: SpeakRequest):
     return Response(content=audio, media_type=content_type)
 
 
+@app.get("/boards")
+def boards():
+    return [{"id": b["id"], "name": b["name"], "chip": b["chip"]} for b in agent.BOARDS.values()]
+
+
 @app.post("/compile")
 def compile_route(req: CompileRequest):
     if not req.code.strip():
@@ -105,7 +118,7 @@ def compile_route(req: CompileRequest):
     if len(req.code.encode("utf-8")) > MAX_CODE_BYTES:
         return {"ok": False, "error": f"code is over {MAX_CODE_BYTES} bytes"}
     start = time.perf_counter()
-    result = compile_sketch(req.code)
+    result = compile_sketch(req.code, fqbn=board_or_400(req.board)["fqbn"])
     result["compile_ms"] = round((time.perf_counter() - start) * 1000)
     return result
 
@@ -114,7 +127,7 @@ def compile_route(req: CompileRequest):
 def run_route(req: RunRequest):
     """Streams Server-Sent Events: {"type":"step",...} while working, then {"type":"result",...}."""
     # The user's circuit must be valid before the agent starts.
-    problem = agent.check_circuit(req.circuit)
+    problem = agent.check_circuit(req.circuit, board_or_400(req.board))
     if problem:
         raise HTTPException(status_code=422, detail=f"circuit: {problem}")
 
@@ -122,7 +135,7 @@ def run_route(req: RunRequest):
 
     def events():
         try:
-            for event in agent.stream_agent(GRAPH, req.session_id, req.text.strip(), req.circuit, mode):
+            for event in agent.stream_agent(GRAPH, req.session_id, req.text.strip(), req.circuit, mode, req.board):
                 if event["type"] == "result":
                     event["llm"] = "/".join(provider_info())
                 yield f"data: {json.dumps(event)}\n\n"

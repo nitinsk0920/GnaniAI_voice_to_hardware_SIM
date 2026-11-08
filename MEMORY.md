@@ -19,6 +19,17 @@ Last updated: 2026-11-08 (end of Phase 4). The project moves to another laptop f
 - LLM: Groq `openai/gpt-oss-120b` (about 1 s per call). Gemini `gemini-3.5-flash` is the backup (`LLM_PROVIDER=gemini` in `.env`).
 - Gnani live-tested on Nov 8: Prisma heard an English clip exactly. Timbre returned valid MP3s in English, Hindi and Kannada. A full voice request was verified in headless Edge with a fake microphone. Timbre takes about 5 s for 2 sentences.
 
+## Direction (user decision, Nov 9)
+The user wants a **production-level** project, not a demo-only one: do not drop features just because of the deadline. Boards are added through **board profiles** (`backend/boards/<id>.json`, shared with the browser): compiler fqbn, chip, simulator engine, wokwi picture element, GND/5V pin names, Servo/tone PWM conflicts, notes and the pin map. The board travels with every request (`board` in `/run` and `/compile`), the LLM gets `board_facts()` in each plan/fix message, and the UI has a board dropdown that moves parts off pins the new board lacks (and says so).
+
+| Board | Status |
+|---|---|
+| Arduino Uno | done |
+| Arduino Nano | done (Nov 9): `arduino:avr:nano`; A6/A7 analog-only (`analog_only`, `adc` channel); picture scaled 1.8x in CSS |
+| Arduino Mega 2560 | next. avr8js exports ports A-L but only timer0/1/2 configs, and the 2560's interrupt vectors differ from the 328P, so write custom timer configs (timer3/4/5 are 16-bit like timer1). Verify each PWM pin by measurement, as was done for the Uno |
+| Raspberry Pi Pico | after the Mega. rp2040js (MIT) on npm; its bootrom is not in the package; compiling needs the arduino-pico core (large download; keep it inside the project if possible). Several unknowns, so test before promising |
+| ESP32, STM32 | no open-source engine. Wokwi CI (cloud, quota 50 free minutes / 30 days) is parked by the user |
+
 ## Open items, in priority order (Phase 5: Nov 9, then record and post on Nov 10)
 1. **Real microphone test.** The old laptop's mic is broken. Options: the new laptop's mic, earphones with a mic, or the phone (see 5).
 2. **The user listens to Timbre Hindi and Kannada** (regenerate samples with `/speak`; the old ones were in the old laptop's `out/voice-test/`). If they sound wrong, try another voice: `GNANI_TTS_VOICE=Lakshmi` (v3.0 voices: Shivani [default], Avinash, Lakshmi, Kalpana, Shubham, Prakash, Devansh, Yashraj, Chetana, Vasudha, Riyaa, Tarika, Harshad).
@@ -62,7 +73,7 @@ Last updated: 2026-11-08 (end of Phase 4). The project moves to another laptop f
 
 ## File map
 - `backend/main.py`: routes `/health`, `/compile`, `/run` (SSE), `/transcribe`, `/speak`.
-- `backend/graph.py`: LangGraph nodes, prompts (`CODE_RULES`, `CHECKS_DOC`, `PLAN_SYSTEM`, `FIX_SYSTEM`, `FIX_CHECKS_SYSTEM`, `EXPLAIN_SYSTEM`), preflight, sim config.
+- `backend/boards/*.json`: board profiles. `backend/graph.py`: `BOARDS`, `board_facts()`, LangGraph nodes, prompts (`CODE_RULES`, `CHECKS_DOC`, `PLAN_SYSTEM`, `FIX_SYSTEM`, `FIX_CHECKS_SYSTEM`, `EXPLAIN_SYSTEM`), preflight, sim config.
 - `backend/evaluator.py`: the measured checks. `backend/verify/verify.mjs`: the headless avr8js run.
 - `backend/llm.py`: Groq or Gemini. `backend/gnani.py`: Prisma and Timbre. `backend/compiler.py`: arduino-cli. `backend/db.py`: SQLite.
 - `sim/main.js`: page logic. `sim/circuit.js`: parts, wiring, interaction. `sim/signals.js`: pin history and graph. `sim/simulator.js`: browser avr8js. `sim/voice.js`: mic to WAV.

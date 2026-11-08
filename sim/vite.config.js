@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite';
 
-// Allow importing ../backend/board_uno.json (shared pin map) from outside sim/.
+// Allow importing ../backend/boards/*.json (shared board profiles) from outside sim/.
 export default defineConfig({
   server: { fs: { allow: ['..'] } },
 });

@@ -33,8 +33,34 @@ MAX_CODE_BYTES = 8_000
 MIN_SIM_MS, MAX_SIM_MS = 4000, 12000
 VERIFY_SCRIPT = Path(__file__).parent / "verify" / "verify.mjs"
 
-BOARD = json.loads((Path(__file__).parent / "board_uno.json").read_text())
-PWM_PINS = [int(p) for p, info in BOARD["pins"].items() if info["pwm"]]
+# Board profiles (backend/boards/*.json): compiler setting, picture, power pins and pin map.
+BOARDS = {p.stem: json.loads(p.read_text()) for p in sorted((Path(__file__).parent / "boards").glob("*.json"))}
+DEFAULT_BOARD = "uno"
+
+
+def get_board(board_id):
+    return BOARDS.get(board_id or DEFAULT_BOARD) or BOARDS[DEFAULT_BOARD]
+
+
+def pwm_pins(board):
+    return [int(p) for p, info in board["pins"].items() if info["pwm"]]
+
+
+def digital_pins(board):
+    """Pins usable as digital I/O: not serial, not analog-only (A6/A7 on the Nano)."""
+    return [p for p, info in board["pins"].items() if info.get("port") and not info.get("reserved")]
+
+
+def analog_pins(board):
+    return [p for p, info in board["pins"].items() if info.get("analog")]
+
+
+def board_facts(board):
+    """The board-specific facts the LLM needs, sent with every plan and fix request."""
+    return (f"Board: {board['name']} ({board['chip']}).\n"
+            f"Digital pins: {', '.join(digital_pins(board))}. PWM (~) pins for analogWrite: {pwm_pins(board)}. "
+            f"Analog inputs: {', '.join(analog_pins(board))}.\n"
+            f"Notes: {' '.join(board['notes'])}")
 COMPONENT_TYPES = {"led", "button", "servo", "buzzer", "potentiometer"}
 OUTPUT_TYPES = {"led", "servo", "buzzer"}
 
@@ -52,6 +78,7 @@ CHECKS = {
 
 class State(TypedDict, total=False):
     session_id: str
+    board: str                # board profile id (backend/boards/<id>.json)
     user_text: str
     user_circuit: dict        # the circuit as the user sent it (to report agent changes)
     circuit: dict
@@ -80,10 +107,10 @@ class State(TypedDict, total=False):
 
 # ---------- prompts ----------
 
-CODE_RULES = f"""Rules for the code:
-- Arduino Uno only. No #include lines, except #include <Servo.h> when the circuit has a servo. No Serial.
+CODE_RULES = """Rules for the code:
+- Write for the board described under "Board" in the request. No #include lines, except #include <Servo.h> when the circuit has a servo. No Serial.
 - The backend adds one line per part: #define <ID>_PIN <pin> (for example LED1_PIN). Use only those names for pins. Never write a literal pin number or LED_BUILTIN. Do not write #define lines for pins yourself.
-- analogWrite only on PWM pins {PWM_PINS}. The Servo library disables analogWrite on pins 9 and 10. tone() breaks PWM on pins 3 and 11.
+- analogWrite only on the board's PWM (~) pins, and follow the board notes (which timers the Servo library and tone() take over).
 - Buttons: pinMode(<ID>_PIN, INPUT_PULLUP); pressed reads LOW. Potentiometers: analogRead(<ID>_PIN) gives 0 to 1023.
 - A blink period is one full on+off cycle: for a 1000 ms period, the LED is on 500 ms and off 500 ms.
 - Under 80 lines. Use millis() timing or short delay() steps. Define setup() and loop().
@@ -106,14 +133,14 @@ A check's window must never contain a press, release or knob change. A blink or 
 Potentiometers start at the middle (512). To test a knob, set it at a few moments (e.g. 0 at 500 ms, 1023 at 4000 ms) and check the output in a window after each change (e.g. "from_ms":800,"to_ms":3900 and "from_ms":4300). Unless the user says otherwise, knob 0 means the minimum (0 degrees, off, lowest) and 1023 the maximum (180 degrees, full).
 """
 
-PLAN_SYSTEM = f"""You write Arduino Uno sketches that run in a simulator. Reply with JSON only.
+PLAN_SYSTEM = f"""You write Arduino sketches that run in a simulator. Reply with JSON only.
 
 {CODE_RULES}
 
 The circuit:
 - Use the user's circuit as given. Change it only if the user asks to add, move or remove a part.
 - Part types: led, button, servo, buzzer, potentiometer. ids are uppercase, like LED1, BUTTON1, SERVO1, BUZZER1, POT1.
-- Pins are 2 to 13 (numbers) or "A0" to "A5". Never 0 or 1. No two parts share a pin. Potentiometers go on A0 to A5.
+- Use only the board's pins: digital pins as numbers (e.g. 9), analog pins as strings (e.g. "A0"). Never 0 or 1. No two parts share a pin. Potentiometers go on analog inputs; other parts never on analog-only pins.
 - If the user adds a part without naming a pin, pick a free compatible pin (a PWM pin if it needs analogWrite).
 - If the request needs fading or brightness (analogWrite) on an LED that is on a non-PWM pin, move it to a free PWM pin and say so in behavior_summary (e.g. "moved LED1 to pin 9 because pin 13 cannot fade").
 
@@ -124,7 +151,7 @@ Reply format:
 
 The user may write in English, Hindi, Kannada, Hinglish or Kanglish. Understand all of them. Write code comments and behavior_summary in English."""
 
-FIX_SYSTEM = f"""You fix an Arduino Uno sketch that failed to compile or failed a measured check in the simulator. Reply with JSON only:
+FIX_SYSTEM = f"""You fix an Arduino sketch that failed to compile or failed a measured check in the simulator. Reply with JSON only:
 {{"code":"<the full corrected sketch, without the #define pin lines>","note":"one short sentence: what you changed and why"}}
 Trust the measurements: they come from running your code. Fix the code so it does what the user asked.
 For a timing problem, scale your delays and intervals by (wanted / measured): e.g. measured cycle 500 ms, wanted 2000 ms -> make every delay or interval 4 times longer. Aim for the middle of the expected range.
@@ -133,7 +160,7 @@ Add "circuit" ({{"components":[{{"type","id","pin"}}]}}) only if the problem is 
 
 {CODE_RULES}"""
 
-FIX_CHECKS_SYSTEM = f"""The acceptance checks or stimulus for an Arduino Uno simulator test are invalid. Rewrite them so they test what the user asked. Do not change the code. Reply with JSON only:
+FIX_CHECKS_SYSTEM = f"""The acceptance checks or stimulus for an Arduino simulator test are invalid. Rewrite them so they test what the user asked. Do not change the code. Reply with JSON only:
 {{"checks":[...],"stimulus":[...],"note":"one short sentence: what you changed and why"}}
 
 {CHECKS_DOC}"""
@@ -163,10 +190,10 @@ def add_step(state, step, note=""):
     return state.get("steps", []) + [{"step": step, "ms": elapsed_ms(state), "note": note}]
 
 
-def normalize_pin(pin):
-    """13, "13" -> 13;  "a0", "A0" -> "A0". Returns None if not a board pin."""
+def normalize_pin(pin, board):
+    """13, "13" -> 13;  "a0", "A0" -> "A0". Returns None if not a pin of this board."""
     text = str(pin).strip().upper()
-    if text not in BOARD["pins"]:
+    if text not in board["pins"]:
         return None
     return int(text) if text.isdigit() else text
 
@@ -223,7 +250,7 @@ def is_number(x):
 
 # ---------- preflight checks (pure Python) ----------
 
-def check_circuit(circuit):
+def check_circuit(circuit, board):
     comps = circuit.get("components") if isinstance(circuit, dict) else None
     if not isinstance(comps, list):
         return "circuit must be {\"components\": [...]}"
@@ -235,13 +262,16 @@ def check_circuit(circuit):
             return f"component type '{c.get('type')}' is not allowed (use {sorted(COMPONENT_TYPES)})"
         if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,15}", str(c.get("id", ""))):
             return f"component id '{c.get('id')}' must be uppercase like LED1"
-        pin = normalize_pin(c.get("pin"))
+        pin = normalize_pin(c.get("pin"), board)
         if pin is None:
-            return f"{c['id']} has pin '{c.get('pin')}', which is not an Uno pin"
-        if pin in (0, 1):
-            return f"{c['id']} is on pin {pin}, which is reserved for serial"
-        if c["type"] == "potentiometer" and not str(pin).startswith("A"):
-            return f"{c['id']} is a potentiometer, so it must be on an analog pin A0 to A5"
+            return f"{c['id']} has pin '{c.get('pin')}', which is not a pin of the {board['name']}"
+        info = board["pins"][str(pin)]
+        if info.get("reserved"):
+            return f"{c['id']} is on pin {pin}, which is reserved ({info['reserved']})"
+        if c["type"] == "potentiometer" and not info.get("analog"):
+            return f"{c['id']} is a potentiometer, so it must be on an analog input ({', '.join(analog_pins(board))})"
+        if c["type"] != "potentiometer" and info.get("analog_only"):
+            return f"{c['id']} is on {pin}, which can only read analog values; use a digital pin"
         if c["id"] in ids:
             return f"two components are called {c['id']}"
         if pin in pins:
@@ -340,7 +370,7 @@ def check_checks(checks, stimulus, circuit):
     return None
 
 
-def check_code(code, circuit):
+def check_code(code, circuit, board):
     if not isinstance(code, str) or not code.strip():
         return "code is empty"
     if code.count("\n") + 1 > MAX_CODE_LINES or len(code.encode()) > MAX_CODE_BYTES:
@@ -365,23 +395,23 @@ def check_code(code, circuit):
     has_tone = re.search(r"\btone\s*\(", code) is not None
     for name in set(re.findall(r"\banalogWrite\s*\(\s*([A-Z][A-Z0-9_]*)_PIN\b", code)):
         pin = by_id[name]["pin"]
-        if pin not in PWM_PINS:
-            return f"analogWrite on {name} (pin {pin}), which is not PWM-capable; PWM pins are {PWM_PINS}"
-        if has_servo and pin in (9, 10):
+        if pin not in pwm_pins(board):
+            return f"analogWrite on {name} (pin {pin}), which is not PWM-capable; PWM pins are {pwm_pins(board)}"
+        if has_servo and pin in board["servo_blocks_pwm"]:
             return f"analogWrite on {name} (pin {pin}) does not work while the Servo library is used"
-        if has_tone and pin in (3, 11):
+        if has_tone and pin in board["tone_blocks_pwm"]:
             return f"analogWrite on {name} (pin {pin}) does not work while tone() is used"
     return None
 
 
 # ---------- verification setup ----------
 
-def pin_ref(pin):
-    info = BOARD["pins"][str(pin)]
+def pin_ref(pin, board):
+    info = board["pins"][str(pin)]
     return {"pin": pin, "port": info["port"], "bit": info["bit"]}
 
 
-def sim_config(circuit, checks, stimulus):
+def sim_config(circuit, checks, stimulus, board):
     """Turn component ids into pins and build the verify.mjs config."""
     comps = circuit["components"]
     by_id = {c["id"]: c for c in comps}
@@ -397,21 +427,22 @@ def sim_config(circuit, checks, stimulus):
         duration = max(duration, s["at_ms"] + 1500)
     duration = int(min(duration, MAX_SIM_MS))
 
+    adc = lambda pin: board["pins"][str(pin)]["adc"]  # analog channel (A6/A7 have no digital port)
     events = []
     for s in stimulus:
         part = by_id[s["target"]]
-        ref = pin_ref(part["pin"])
         if part["type"] == "button":  # pressed pulls the pin LOW
+            ref = pin_ref(part["pin"], board)
             events.append({"at_ms": s["at_ms"], "kind": "pin", "port": ref["port"], "bit": ref["bit"],
                            "level": s["action"] == "release"})
         else:
-            events.append({"at_ms": s["at_ms"], "kind": "analog", "channel": ref["bit"],
+            events.append({"at_ms": s["at_ms"], "kind": "analog", "channel": adc(part["pin"]),
                            "volts": max(0, min(1023, s["value"])) / 1023 * 5})
     config = {
         "duration_ms": duration,
-        "watch": [pin_ref(c["pin"]) for c in comps if c["type"] in OUTPUT_TYPES],
-        "inputs": [{**pin_ref(c["pin"]), "level": True} for c in comps if c["type"] == "button"],
-        "analog": [{"channel": pin_ref(c["pin"])["bit"], "volts": 2.5} for c in comps if c["type"] == "potentiometer"],
+        "watch": [pin_ref(c["pin"], board) for c in comps if c["type"] in OUTPUT_TYPES],
+        "inputs": [{**pin_ref(c["pin"], board), "level": True} for c in comps if c["type"] == "button"],
+        "analog": [{"channel": adc(c["pin"]), "volts": 2.5} for c in comps if c["type"] == "potentiometer"],
         "events": events,
     }
     return config, resolved
@@ -442,6 +473,7 @@ def plan_and_code(state):
     previous = state.get("code") or ""
     user = (
         f"Request: {state['user_text']}\n\n"
+        f"{board_facts(get_board(state.get('board')))}\n\n"
         f"Circuit: {json.dumps(state['circuit'])}\n\n"
         + (f"Current code (change only what the request asks for):\n{previous}" if previous
            else "Current code: none, write a new sketch.")
@@ -466,21 +498,23 @@ def plan_and_code(state):
     }
 
 
-def move_to_pwm(circuit, code, checks):
+def move_to_pwm(circuit, code, checks, board):
     """Fading needs a PWM (~) pin. If an LED that must fade sits on another pin, move it to a free
     PWM pin. The code only uses LED1_PIN-style names, so it needs no change. Returns the moves."""
     needs_pwm = {c.get("target") for c in checks if c.get("type") in ("breathe", "duty")}
     needs_pwm |= set(re.findall(r"\banalogWrite\s*\(\s*([A-Z][A-Z0-9_]*)_PIN\b", code))
     blocked = set()
     if "Servo" in code:
-        blocked |= {9, 10}
+        blocked |= set(board["servo_blocks_pwm"])
     if re.search(r"\btone\s*\(", code):
-        blocked |= {3, 11}
+        blocked |= set(board["tone_blocks_pwm"])
+    # Prefer the classic PWM pins first (9, 10, 11 ...), then any other PWM pin of the board.
+    candidates = [p for p in (9, 10, 11, 5, 6, 3) if p in pwm_pins(board)] + pwm_pins(board)
     used = {c["pin"] for c in circuit["components"]}
     moves = []
     for c in circuit["components"]:
-        if c["id"] in needs_pwm and c["type"] == "led" and c["pin"] not in PWM_PINS:
-            free = next((p for p in (9, 10, 11, 5, 6, 3) if p not in used and p not in blocked), None)
+        if c["id"] in needs_pwm and c["type"] == "led" and c["pin"] not in pwm_pins(board):
+            free = next((p for p in candidates if p not in used and p not in blocked), None)
             if free is not None:
                 moves.append(f"moved {c['id']} from pin {c['pin']} to pin {free} (pin {c['pin']} cannot fade; ~ pins can)")
                 used.discard(c["pin"])
@@ -490,13 +524,13 @@ def move_to_pwm(circuit, code, checks):
 
 
 def preflight(state):
-    circuit = state["circuit"]
+    circuit, board = state["circuit"], get_board(state.get("board"))
     checks, stimulus = state.get("checks", []), state.get("stimulus", [])
-    problem = check_circuit(circuit)
-    moves = [] if problem else move_to_pwm(circuit, state["code"] or "", checks)
+    problem = check_circuit(circuit, board)
+    moves = [] if problem else move_to_pwm(circuit, state["code"] or "", checks, board)
     problem = (problem
                or check_checks(checks, stimulus, circuit)
-               or check_code(state["code"], circuit))
+               or check_code(state["code"], circuit, board))
     note = problem or ("ok, " + "; ".join(moves) if moves else "ok")
     result = {"steps": add_step(state, "preflight", note), "problem": problem,
               "problem_stage": "preflight" if problem else None}
@@ -515,7 +549,7 @@ def compile_node(state):
         update = {"code": code, "full_code": full_code, "break_done": True}
 
     offset = define_block(state["circuit"]).count("\n")
-    result = compile_sketch(full_code, line_offset=offset)
+    result = compile_sketch(full_code, line_offset=offset, fqbn=get_board(state.get("board"))["fqbn"])
     if result["ok"]:
         return {**update, "hex": result["hex"], "problem": None,
                 "steps": add_step(state, "compiling", f"attempt {attempt}: ok")}
@@ -528,7 +562,8 @@ def compile_node(state):
 
 
 def verify(state):
-    config, resolved = sim_config(state["circuit"], state["checks"], state.get("stimulus", []))
+    config, resolved = sim_config(state["circuit"], state["checks"], state.get("stimulus", []),
+                                  get_board(state.get("board")))
     measurements, error = run_simulation(state["hex"], config)
     if error:
         return {"problem": error, "problem_stage": "verify", "fatal": True,
@@ -558,6 +593,7 @@ def fix(state):
         for h in state.get("history", [])) or "none"
     user = (
         f"Request: {state['user_text']}\n\n"
+        f"{board_facts(get_board(state.get('board')))}\n\n"
         f"Circuit: {json.dumps(state['circuit'])}\n\n"
         f"Pin defines added by the backend:\n{define_block(state['circuit'])}"
         f"Code (line numbers in errors refer to this code):\n{state.get('code') or '(none yet)'}\n\n"
@@ -699,11 +735,11 @@ def build_graph():
     return g.compile(checkpointer=checkpointer)
 
 
-def stream_agent(graph, session_id, text, circuit, debug_break=""):
+def stream_agent(graph, session_id, text, circuit, debug_break="", board=DEFAULT_BOARD):
     """Run one request, yielding progress events and finally the result.
     Fields listed in `start` are reset; the last code comes from the session checkpoint."""
     start = {
-        "session_id": session_id, "user_text": text, "circuit": circuit,
+        "session_id": session_id, "board": board, "user_text": text, "circuit": circuit,
         "user_circuit": json.loads(json.dumps(circuit)),
         "attempts": 0, "history": [], "hex": "", "full_code": "", "report": {},
         "explanation": {}, "spoken_summary": "",

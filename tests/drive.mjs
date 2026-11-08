@@ -5,9 +5,10 @@
 // Use an output folder under out/ (git-ignored): it also holds a throwaway Edge profile.
 import { spawn } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
-const [, , stepsFile, outDir] = process.argv;
+const [, , stepsFile, outArg] = process.argv;
+const outDir = resolve(outArg); // Edge needs an absolute profile folder
 const steps = JSON.parse(readFileSync(stepsFile, 'utf8'));
 mkdirSync(outDir, { recursive: true });
 const EDGE = 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe';
@@ -19,7 +20,7 @@ const edge = spawn(EDGE, ['--headless=new', '--disable-gpu', '--no-first-run', '
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let target;
-for (let i = 0; i < 40 && !target; i++) {
+for (let i = 0; i < 80 && !target; i++) {
   await sleep(250);
   try { target = (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).find((t) => t.type === 'page'); } catch {}
 }

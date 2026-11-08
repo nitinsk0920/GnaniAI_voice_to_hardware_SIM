@@ -1,0 +1,181 @@
+{
+  "id": "nano",
+  "name": "Arduino Nano",
+  "chip": "ATmega328P, 16 MHz",
+  "fqbn": "arduino:avr:nano",
+  "engine": "avr8js",
+  "element": "wokwi-arduino-nano",
+  "gnd_pin": "GND.2",
+  "vcc_pin": "5V",
+  "servo_blocks_pwm": [
+    9,
+    10
+  ],
+  "tone_blocks_pwm": [
+    3,
+    11
+  ],
+  "notes": [
+    "D0-D7 are PORTD bits 0-7. D0 and D1 are serial: never use them.",
+    "D8-D13 are PORTB bits 0-5 (pin 13 is PB5, pin 9 is PB1).",
+    "A0-A5 are PORTC bits 0-5.",
+    "Servo library disables analogWrite on pins 9 and 10 (it takes Timer1).",
+    "tone() uses Timer2 and breaks PWM on pins 3 and 11.",
+    "Buttons are wired pin-to-GND and read with INPUT_PULLUP: pressed is LOW.",
+    "A6 and A7 are analog inputs only (analogRead); they cannot be digital pins."
+  ],
+  "pins": {
+    "0": {
+      "port": "D",
+      "bit": 0,
+      "pwm": false,
+      "timer": null,
+      "reserved": "serial RX"
+    },
+    "1": {
+      "port": "D",
+      "bit": 1,
+      "pwm": false,
+      "timer": null,
+      "reserved": "serial TX"
+    },
+    "2": {
+      "port": "D",
+      "bit": 2,
+      "pwm": false,
+      "timer": null
+    },
+    "3": {
+      "port": "D",
+      "bit": 3,
+      "pwm": true,
+      "timer": 2
+    },
+    "4": {
+      "port": "D",
+      "bit": 4,
+      "pwm": false,
+      "timer": null
+    },
+    "5": {
+      "port": "D",
+      "bit": 5,
+      "pwm": true,
+      "timer": 0
+    },
+    "6": {
+      "port": "D",
+      "bit": 6,
+      "pwm": true,
+      "timer": 0
+    },
+    "7": {
+      "port": "D",
+      "bit": 7,
+      "pwm": false,
+      "timer": null
+    },
+    "8": {
+      "port": "B",
+      "bit": 0,
+      "pwm": false,
+      "timer": null
+    },
+    "9": {
+      "port": "B",
+      "bit": 1,
+      "pwm": true,
+      "timer": 1
+    },
+    "10": {
+      "port": "B",
+      "bit": 2,
+      "pwm": true,
+      "timer": 1
+    },
+    "11": {
+      "port": "B",
+      "bit": 3,
+      "pwm": true,
+      "timer": 2
+    },
+    "12": {
+      "port": "B",
+      "bit": 4,
+      "pwm": false,
+      "timer": null
+    },
+    "13": {
+      "port": "B",
+      "bit": 5,
+      "pwm": false,
+      "timer": null
+    },
+    "A0": {
+      "port": "C",
+      "bit": 0,
+      "pwm": false,
+      "timer": null,
+      "analog": true,
+      "adc": 0
+    },
+    "A1": {
+      "port": "C",
+      "bit": 1,
+      "pwm": false,
+      "timer": null,
+      "analog": true,
+      "adc": 1
+    },
+    "A2": {
+      "port": "C",
+      "bit": 2,
+      "pwm": false,
+      "timer": null,
+      "analog": true,
+      "adc": 2
+    },
+    "A3": {
+      "port": "C",
+      "bit": 3,
+      "pwm": false,
+      "timer": null,
+      "analog": true,
+      "adc": 3
+    },
+    "A4": {
+      "port": "C",
+      "bit": 4,
+      "pwm": false,
+      "timer": null,
+      "analog": true,
+      "adc": 4
+    },
+    "A5": {
+      "port": "C",
+      "bit": 5,
+      "pwm": false,
+      "timer": null,
+      "analog": true,
+      "adc": 5
+    },
+    "A6": {
+      "port": null,
+      "bit": null,
+      "pwm": false,
+      "timer": null,
+      "analog": true,
+      "adc": 6,
+      "analog_only": true
+    },
+    "A7": {
+      "port": null,
+      "bit": null,
+      "pwm": false,
+      "timer": null,
+      "analog": true,
+      "adc": 7,
+      "analog_only": true
+    }
+  }
+}

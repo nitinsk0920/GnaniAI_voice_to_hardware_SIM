@@ -6,7 +6,7 @@ import { resetSignals, record, prune, drawGraph } from './signals.js';
 import { startRecording, stopRecording, isRecording } from './voice.js';
 import {
   initCircuit, getCircuit, setCircuit, setController, simSetup, graphRows,
-  updateParts, resetParts, replaceDefineBlock, unlockAudio, setSound,
+  updateParts, resetParts, replaceDefineBlock, unlockAudio, setSound, BOARDS, setBoard, getBoardId,
 } from './circuit.js';
 
 const API = 'http://localhost:8000';
@@ -98,7 +98,7 @@ async function compileAndRun() {
     const res = await fetch(`${API}/compile`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code: codeBox.value }),
+      body: JSON.stringify({ code: codeBox.value, board: getBoardId() }),
     });
     const data = await res.json();
     const secs = (data.compile_ms / 1000).toFixed(1);
@@ -150,7 +150,7 @@ async function askAgent(event) {
     const res = await fetch(`${API}/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, text, circuit: getCircuit(), debug_break: $('debugBreak').value }),
+      body: JSON.stringify({ session_id: sessionId, text, circuit: getCircuit(), board: getBoardId(), debug_break: $('debugBreak').value }),
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
@@ -229,10 +229,13 @@ function renderExplanation(data) {
   $('exFixesBox').hidden = !fixes.length;
   $('exFixes').replaceChildren(...fixes.map((f) => item('li', `Attempt ${f.attempt} (${f.stage}): ${f.change}`)));
 
-  $('exWalk').replaceChildren(...(ex.walkthrough || []).map((w) => {
+  // Skip empty steps; show "Lines ..." only when the model gave line numbers.
+  const steps = (ex.walkthrough || []).filter((w) => w && (w.what || w.why));
+  $('exWalk').replaceChildren(...steps.map((w) => {
     const li = document.createElement('li');
-    li.append(item('span', `Lines ${w.lines}: `, 'lines'), item('span', w.what || ''), item('div', w.why || '', 'why'));
-    li.addEventListener('click', () => highlightLines(String(w.lines)));
+    if (w.lines) li.append(item('span', `Lines ${w.lines}: `, 'lines'));
+    li.append(item('span', w.what || ''), item('div', w.why || '', 'why'));
+    if (w.lines) li.addEventListener('click', () => highlightLines(String(w.lines)));
     return li;
   }));
 
@@ -346,11 +349,28 @@ function newSession() {
 // ---------- wire up ----------
 
 initCircuit({
-  partsEl: $('parts'), addTypeEl: $('addType'), addBtn: $('addBtn'), unoEl: $('uno'),
+  partsEl: $('parts'), addTypeEl: $('addType'), addBtn: $('addBtn'), mcuEl: $('mcu'),
   stageEl: $('stage'), boardEl: $('boardWrap'), wiresEl: $('wires'), onCircuitChange,
 });
 setCircuit(DEFAULT_CIRCUIT);
 codeBox.value = replaceDefineBlock(DEFAULT_BODY, DEFAULT_CIRCUIT);
+
+// Board choice (remembered in this browser). Changing it stops the run and keeps the parts,
+// moving any part whose pin the new board does not have.
+const boardSelect = $('boardSelect');
+for (const b of Object.values(BOARDS)) boardSelect.append(new Option(b.name, b.id));
+function chooseBoard(id) {
+  const changes = setBoard(id);
+  boardSelect.value = getBoardId();
+  try { localStorage.setItem('gnani_board', getBoardId()); } catch {}
+  $('wiringNotice').hidden = !changes.length;
+  $('wiringNotice').textContent = changes.length ? `Switched board: ${changes.join('; ')}.` : '';
+}
+let savedBoard = 'uno';
+try { savedBoard = localStorage.getItem('gnani_board') || 'uno'; } catch {}
+if (savedBoard !== 'uno') chooseBoard(savedBoard);
+boardSelect.value = getBoardId();
+boardSelect.addEventListener('change', () => chooseBoard(boardSelect.value));
 drawGraph(graph, graphRows(), 0);
 
 $('askForm').addEventListener('submit', askAgent);

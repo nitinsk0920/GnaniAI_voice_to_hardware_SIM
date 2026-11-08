@@ -61,7 +61,7 @@ explanation, spoken_summary, status   # status: "passed" | "gave_up"
 
 ## 5. Board definition and pin injection (the backend owns the numbers)
 
-1. **`backend/board_uno.json`** (one file, read by the backend, `verify.mjs` and the browser) lists every Uno pin with its Arduino number, AVR port and bit, PWM capability and timer, and notes:
+1. **`backend/boards/<id>.json`** (one board profile per board, since Nov 9; originally `board_uno.json`; read by the backend and the browser) lists every Uno pin with its Arduino number, AVR port and bit, PWM capability and timer, and notes:
    - D0 to D7 are PORTD bits 0 to 7 (D0 and D1 are serial: avoid).
    - D8 to D13 are PORTB bits 0 to 5 (pin 13 is PB5, pin 9 is PB1).
    - A0 to A5 are PORTC bits 0 to 5.
