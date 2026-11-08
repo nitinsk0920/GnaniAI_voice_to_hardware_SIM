@@ -2,6 +2,7 @@
   "id": "nano",
   "name": "Arduino Nano",
   "chip": "ATmega328P, 16 MHz",
+  "mcu": "atmega328p",
   "fqbn": "arduino:avr:nano",
   "engine": "avr8js",
   "element": "wokwi-arduino-nano",

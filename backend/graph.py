@@ -341,6 +341,14 @@ def check_checks(checks, stimulus, circuit):
             return (f"check {ch['type']} has the time window from_ms={a} to_ms={b}; it must satisfy "
                     f"0 <= from_ms < to_ms <= {MAX_SIM_MS}, at least 500 ms long. Leave out from_ms to start at "
                     f"the beginning, or to_ms to run to the end")
+        # A repeating behavior can only be measured if the window holds about two full cycles.
+        if ch["type"] in ("blink", "breathe"):
+            span = (b if b is not None else MAX_SIM_MS) - (a if a is not None else 200)
+            need = 2.2 * ch["period_ms_max"]
+            if span < need:
+                return (f"check {ch['type']} {ch['target']} looks at only {span:.0f} ms, but a period of up to "
+                        f"{ch['period_ms_max']:.0f} ms needs a window of at least {need:.0f} ms (about two cycles). "
+                        f"Make the window longer, e.g. move the button press later")
         if ch["type"] == "steady" and ch["level"] not in ("high", "low"):
             return "check steady: level must be \"high\" or \"low\""
         for lo, hi in (("period_ms_min", "period_ms_max"), ("freq_min", "freq_max"), ("min", "max")):
@@ -439,6 +447,7 @@ def sim_config(circuit, checks, stimulus, board):
             events.append({"at_ms": s["at_ms"], "kind": "analog", "channel": adc(part["pin"]),
                            "volts": max(0, min(1023, s["value"])) / 1023 * 5})
     config = {
+        "mcu": board["mcu"],
         "duration_ms": duration,
         "watch": [pin_ref(c["pin"], board) for c in comps if c["type"] in OUTPUT_TYPES],
         "inputs": [{**pin_ref(c["pin"], board), "level": True} for c in comps if c["type"] == "button"],

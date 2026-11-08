@@ -14,37 +14,24 @@
 //
 // Note: import 'avr8js' by its bare name (its ESM build cannot be loaded by plain Node).
 import { readFileSync } from 'node:fs';
-import {
-  CPU, avrInstruction, AVRTimer, AVRIOPort, AVRADC, PinState,
-  timer0Config, timer1Config, timer2Config, portBConfig, portCConfig, portDConfig, adcConfig,
-} from 'avr8js';
+import * as avr from 'avr8js';
+import { chipSetup, loadHex } from '../boards/avr_chips.mjs'; // shared with the browser simulator
 
+const { CPU, avrInstruction, AVRTimer, AVRIOPort, AVRADC, PinState } = avr;
 const CYCLES_PER_MS = 16000; // 16 MHz
-
-function loadHex(source, target) {
-  for (const line of source.split('\n')) {
-    if (line[0] === ':' && line.substr(7, 2) === '00') {
-      const n = parseInt(line.substr(1, 2), 16);
-      const addr = parseInt(line.substr(3, 4), 16);
-      for (let i = 0; i < n; i++) target[addr + i] = parseInt(line.substr(9 + i * 2, 2), 16);
-    }
-  }
-}
 
 const [, , hexPath, configPath] = process.argv;
 const config = JSON.parse(readFileSync(configPath, 'utf8'));
 const wallStart = performance.now();
 
-const program = new Uint16Array(16384);
+// The chip comes from the board profile ("atmega328p" for Uno/Nano, "atmega2560" for Mega).
+const chip = chipSetup(avr, config.mcu || 'atmega328p');
+const program = new Uint16Array(chip.progBytes / 2);
 loadHex(readFileSync(hexPath, 'utf8'), new Uint8Array(program.buffer));
-const cpu = new CPU(program);
-const timers = [timer0Config, timer1Config, timer2Config].map((c) => new AVRTimer(cpu, c));
-const ports = {
-  B: new AVRIOPort(cpu, portBConfig),
-  C: new AVRIOPort(cpu, portCConfig),
-  D: new AVRIOPort(cpu, portDConfig),
-};
-const adc = new AVRADC(cpu, adcConfig);
+const cpu = new CPU(program, chip.sramBytes);
+const timers = chip.timers.map((c) => new AVRTimer(cpu, c));
+const ports = Object.fromEntries(Object.entries(chip.ports).map(([letter, cfg]) => [letter, new AVRIOPort(cpu, cfg)]));
+const adc = new AVRADC(cpu, chip.adc);
 
 // Initial input levels. avr8js does not model pull-ups when reading, so released buttons are driven HIGH.
 for (const i of config.inputs || []) ports[i.port].setPin(i.bit, i.level);

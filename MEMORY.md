@@ -26,8 +26,8 @@ The user wants a **production-level** project, not a demo-only one: do not drop 
 |---|---|
 | Arduino Uno | done |
 | Arduino Nano | done (Nov 9): `arduino:avr:nano`; A6/A7 analog-only (`analog_only`, `adc` channel); picture scaled 1.8x in CSS |
-| Arduino Mega 2560 | next. avr8js exports ports A-L but only timer0/1/2 configs, and the 2560's interrupt vectors differ from the 328P, so write custom timer configs (timer3/4/5 are 16-bit like timer1). Verify each PWM pin by measurement, as was done for the Uno |
-| Raspberry Pi Pico | after the Mega. rp2040js (MIT) on npm; its bootrom is not in the package; compiling needs the arduino-pico core (large download; keep it inside the project if possible). Several unknowns, so test before promising |
+| Arduino Mega 2560 | done (Nov 9): `arduino:avr:mega`, `mcu: atmega2560`. Profile generated from the core's `variants/mega/pins_arduino.h` (70 pins, PWM 2-13 and 44-46). `backend/boards/avr_chips.mjs` builds timers 0-5 (vectors from avr-libc `iomxx0_1.h`, x2 for avr8js), ports A-L with the 2560's INT0-7 / PCINT0 / PCINT2, a 16-channel ADC (A8-A15 via MUX5), 256 KB flash (avr8js then uses 3-byte return addresses) and data space up to 0x21FF. Servo uses Timer5 first (blocks PWM 44-46); tone() uses Timer2 (blocks 9, 10). `tests/test_mega.py` measures all of it (25/25). Wiring routes the right-hand header (22-53) out to the right |
+| Raspberry Pi Pico | next, when the user asks. rp2040js (MIT) on npm; its bootrom is not in the package; compiling needs the arduino-pico core (large download; keep it inside the project if possible). Several unknowns, so test before promising |
 | ESP32, STM32 | no open-source engine. Wokwi CI (cloud, quota 50 free minutes / 30 days) is parked by the user |
 
 ## Open items, in priority order (Phase 5: Nov 9, then record and post on Nov 10)
@@ -57,6 +57,7 @@ The user wants a **production-level** project, not a demo-only one: do not drop 
   - impossible thresholds;
   - check windows that contain a button press;
   - swapped from/to times;
+  - blink/breathe windows too short to hold about two cycles (seen on the Mega run, Nov 9);
   - an LED that must fade on a non-PWM pin (the backend moves it, `move_to_pwm`).
 - When the checks themselves are wrong, `fix` uses the checks-only prompt.
 - A fix can still bend the code to fit a slightly wrong check (seen once: servo mapped 30-150 instead of 0-180).
@@ -67,7 +68,9 @@ The user wants a **production-level** project, not a demo-only one: do not drop 
 
 ## How to test (the scripts are in `tests/`)
 - `.venv\Scripts\python tests\test_offline.py`: preflight rules, error line numbers. No LLM, no servers.
-- `.venv\Scripts\python tests\test_verify.py`: 10 sketches, half deliberately wrong, through compile, headless simulation and the evaluator. No LLM, no servers. About 20 s.
+- `.venv\Scripts\python tests\test_verify.py`: 12 sketches (10 Uno, half deliberately wrong, plus 2 Nano) through compile, headless simulation and the evaluator. No LLM, no servers. About 25 s.
+- `.venv\Scripts\python tests\test_mega.py`: Mega 2560 measured checks: 15 PWM pins, delay, servo, tone, port A button, A0/A8, attachInterrupt (25 checks). No LLM, no servers. About 30 s.
+- Browser scenarios for `tests\drive.mjs`: `ui_timing_bug.json`, `ui_breathe_button.json`, `ui_wiring_rewire.json`, `ui_nano.json`, `ui_mega.json`.
 - `.venv\Scripts\python tests\test_stream.py <session> <0|1> "<circuit json>" <request>`: one real agent run over SSE (needs the backend; uses the LLM).
 - `node tests\drive.mjs tests\ui_timing_bug.json out\ui`: drives headless Edge through the real page and saves screenshots to `out\ui` (needs both servers; uses the LLM). See the header of `drive.mjs` for the fake-microphone flags.
 

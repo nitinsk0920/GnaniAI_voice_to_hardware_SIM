@@ -3,9 +3,10 @@
 // Board profiles (pin map, picture, power pins) are shared with the backend: backend/boards/*.json
 import uno from '../backend/boards/uno.json';
 import nano from '../backend/boards/nano.json';
+import mega from '../backend/boards/mega.json';
 import { record, duty, lastPulseMs, frequency } from './signals.js';
 
-export const BOARDS = { uno, nano };
+export const BOARDS = { uno, nano, mega };
 let board = uno;
 
 // Which pins each part type may use on the current board.
@@ -160,20 +161,30 @@ function drawWires() {
     .filter((w) => w.from && w.to)
     .sort((a, b) => Math.abs(a.to.x - a.from.x) - Math.abs(b.to.x - b.from.x));
 
+  // Which edge of the board a pin sits on: the top header, the right-hand header (Mega 22-53), or the bottom.
+  const edge = (p) => (p.y < boardTop + rect.height * 0.25 ? 'top'
+    : p.x > boardRight - rect.width * 0.12 ? 'right' : 'bottom');
+
   // Room under the board for the wires that go around it (5V and analog pins).
-  const aroundCount = resolved.filter((w) => w.from.y > boardTop + rect.height / 2).length;
+  const aroundCount = resolved.filter((w) => edge(w.from) === 'bottom').length;
   boardEl.style.marginBottom = `${aroundCount ? 14 + aroundCount * LANE : 0}px`;
 
   let rightLane = 0;
   const paths = resolved.map((w, k) => {
     const lane = boardTop - 12 - k * LANE;
     let d = `M${w.from.x},${w.from.y}`;
-    if (w.from.y > boardTop + rect.height / 2) {
+    const from = edge(w.from);
+    if (from === 'bottom') {
       // Bottom header (5V, analog pins): go down, around the right side of the board, then up.
       const below = boardBottom + 8 + rightLane * LANE;
       const side = boardRight + 10 + rightLane * LANE;
       rightLane++;
       d += ` V${below} H${side} V${lane}`;
+    } else if (from === 'right') {
+      // Right-hand header: step out to the right of the board, then up.
+      const side = boardRight + 10 + rightLane * LANE;
+      rightLane++;
+      d += ` H${side} V${lane}`;
     } else {
       d += ` V${lane}`;
     }
@@ -295,6 +306,7 @@ export function simSetup() {
   const outputs = circuit.components.filter((c) => ['led', 'servo', 'buzzer'].includes(c.type)).map((c) => c.pin);
   const watchPins = [...new Set([...outputs, 13])]; // 13 also drives the Uno's on-board LED
   return {
+    mcu: board.mcu,
     watch: watchPins.map((pin) => ({ pin, ...pinInfo(pin) })),
     inputs: circuit.components.filter((c) => c.type === 'button').map((c) => ({ ...pinInfo(c.pin), level: true })),
     analog: circuit.components.filter((c) => c.type === 'potentiometer')

@@ -1,0 +1,14 @@
+[
+  {"eval": "localStorage.removeItem('gnani_board'); document.querySelector('#newSessionBtn').click(); document.querySelector('#speakToggle').checked=false; const s=document.querySelector('#boardSelect'); s.value='mega'; s.dispatchEvent(new Event('change')); for (const t of ['button','potentiometer']) { document.querySelector('#addType').value=t; document.querySelector('#addBtn').click(); } const set=(type,v)=>{const el=document.querySelector('.part-'+type+' select'); el.value=v; el.dispatchEvent(new Event('change'));}; set('button','30'); set('potentiometer','A8'); 'mega built'", "sleep": 800},
+  {"eval": "({board: document.querySelector('#mcu').tagName, wires: document.querySelectorAll('#wires path').length, ledPinOptions: document.querySelectorAll('.part-led select option').length, parts: [...document.querySelectorAll('.part-label strong')].map(e=>e.textContent+':'+e.nextSibling.value).join(', ')})", "print": "mega circuit"},
+  {"eval": "document.querySelector('#runBtn').click(); 'compile & run'", "sleep": 4000},
+  {"eval": "(async()=>{const led=document.querySelector('wokwi-led'); const a=led.value; await new Promise(r=>setTimeout(r,500)); const b=led.value; await new Promise(r=>setTimeout(r,500)); const c=led.value; return {status: document.querySelector('#status').textContent, samples:[a,b,c], onboardLed13: document.querySelector('#mcu').led13, time: document.querySelector('#simTime').textContent}})()", "print": "manual blink on Mega pin 13 (samples should alternate)"},
+  {"shot": "mega-circuit.png"},
+  {"eval": "document.querySelector('#request').value='make the LED breathe, and when I press the button keep it fully on'; document.querySelector('#askBtn').click(); 'asked'"},
+  {"waitFor": "/Verified|could not|failed/.test(document.querySelector('#agentStatus').textContent)", "timeout": 150000},
+  {"sleep": 1500},
+  {"eval": "({agent: document.querySelector('#agentStatus').textContent, notice: document.querySelector('#wiringNotice').hidden ? '' : document.querySelector('#wiringNotice').textContent, steps: [...document.querySelectorAll('#steps li')].map(l=>l.textContent.slice(0,120)), verified: [...document.querySelectorAll('#exVerified li')].map(l=>l.textContent)})", "print": "agent on Mega"},
+  {"eval": "document.querySelector('wokwi-pushbutton').dispatchEvent(new Event('button-press')); 'pressed'", "sleep": 1200},
+  {"eval": "({ledBrightness: +document.querySelector('wokwi-led').brightness.toFixed(2)})", "print": "button held on pin 30 (expect 1)"},
+  {"shot": "mega-agent.png"}
+]

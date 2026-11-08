@@ -2,6 +2,7 @@
   "id": "uno",
   "name": "Arduino Uno",
   "chip": "ATmega328P, 16 MHz",
+  "mcu": "atmega328p",
   "fqbn": "arduino:avr:uno",
   "engine": "avr8js",
   "element": "wokwi-arduino-uno",
