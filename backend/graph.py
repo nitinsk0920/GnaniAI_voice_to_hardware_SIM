@@ -92,6 +92,7 @@ class State(TypedDict, total=False):
     problem: Optional[str]    # what went wrong in the last step (None = ok)
     problem_stage: Optional[str]
     fatal: bool               # provider or simulator error: retrying will not help
+    unsupported: list         # part types the user asked for that we cannot simulate yet
     last_error_norm: Optional[str]
     repeat_error: bool
     behavior_summary: str
@@ -143,6 +144,7 @@ The circuit:
 - Use only the board's pins: digital pins as numbers (e.g. 9), analog pins as strings (e.g. "A0"). Never 0 or 1. No two parts share a pin. Potentiometers go on analog inputs; other parts never on analog-only pins.
 - If the user adds a part without naming a pin, pick a free compatible pin (a PWM pin if it needs analogWrite).
 - If the request needs fading or brightness (analogWrite) on an LED that is on a non-PWM pin, move it to a free PWM pin and say so in behavior_summary (e.g. "moved LED1 to pin 9 because pin 13 cannot fade").
+- If the request needs any hardware that is not one of the part types above (for example an LCD, OLED, relay, motor, NeoPixel, sensor or keypad), do NOT substitute or leave it out: reply {{"unsupported": ["lcd"]}} (the missing part names) with the usual keys left empty.
 
 {CHECKS_DOC}
 
@@ -492,6 +494,10 @@ def plan_and_code(state):
     except LLMError as e:
         return {"problem": f"planning failed: {e}", "problem_stage": "plan", "fatal": not e.bad_output,
                 "steps": add_step(state, "planning", "failed")}
+    if out.get("unsupported"):
+        names = [str(x) for x in out["unsupported"]] if isinstance(out["unsupported"], list) else [str(out["unsupported"])]
+        return {"problem": f"unsupported part: {', '.join(names)}", "problem_stage": "plan", "fatal": True,
+                "unsupported": names, "steps": add_step(state, "planning", f"needs a part I can't simulate yet: {', '.join(names)}")}
     note = out.get("behavior_summary", "")
     changes = circuit_changes(state.get("user_circuit"), out["circuit"])
     if changes:
@@ -543,6 +549,16 @@ def preflight(state):
     note = problem or ("ok, " + "; ".join(moves) if moves else "ok")
     result = {"steps": add_step(state, "preflight", note), "problem": problem,
               "problem_stage": "preflight" if problem else None}
+    # A part we cannot simulate yet is not something a fix can solve (and must never be quietly dropped):
+    # unknown part types, or code that pulls in a library for unsupported hardware, stop the run honestly.
+    comps = circuit.get("components") if isinstance(circuit, dict) else None
+    unknown = {str(c.get("type")) for c in (comps or []) if isinstance(c, dict) and c.get("type") not in COMPONENT_TYPES}
+    for header in re.findall(r"#include\s*[<\"]([^>\"]+)[>\"]", state.get("code") or ""):
+        for key, part in HARDWARE_LIBRARIES.items():
+            if key.lower() in header.lower():
+                unknown.add(part)
+    if unknown:
+        result.update(fatal=True, unsupported=sorted(unknown))
     if not problem:
         # pins normalized and ranges widened in place
         result.update(circuit=circuit, checks=checks, full_code=define_block(circuit) + state["code"])
@@ -677,7 +693,31 @@ def explain(state):
             "steps": add_step(state, "explaining", "done" if "error" not in out else "LLM failed, short version")}
 
 
+PART_NAMES = {"led": "LEDs", "button": "push buttons", "servo": "servos", "buzzer": "buzzers",
+              "potentiometer": "potentiometers"}
+# Library header (substring) -> the hardware it means. Used to refuse honestly instead of dropping the part.
+HARDWARE_LIBRARIES = {"LiquidCrystal": "an LCD", "SSD1306": "an OLED display", "U8g2": "an OLED display",
+                      "NeoPixel": "NeoPixel LEDs", "FastLED": "NeoPixel LEDs", "DHT": "a DHT sensor",
+                      "Stepper": "a stepper motor", "Keypad": "a keypad", "IRremote": "an IR remote",
+                      "TM1637": "a 4-digit display", "MPU6050": "an MPU6050 sensor", "RTClib": "a clock module",
+                      "HX711": "a load cell", "Wire.h": "an I2C device", "SPI.h": "an SPI device"}
+
+
 def give_up(state):
+    if state.get("unsupported"):
+        def readable(name):  # "lcd" -> "an LCD", "relay" -> "a relay", "an OLED display" stays
+            name = name.strip()
+            if re.match(r"(a|an) ", name):
+                return name
+            word = name.upper() if len(name) <= 4 else name
+            return ("an " if word[0].lower() in "aeiou" or word.isupper() and word[0] in "AEFHILMNORSX" else "a ") + word
+        parts = " and ".join(readable(n) for n in state["unsupported"])
+        have = ", ".join(PART_NAMES[t] for t in sorted(COMPONENT_TYPES))
+        message = f"I can't simulate {parts} yet. Right now I can use {have}."
+        return {"status": "gave_up", "spoken_summary": message, "problem": message,
+                "explanation": {"summary": message, "walkthrough": [], "try_next": [], "verified": [],
+                                "fixes_made": []},
+                "steps": add_step(state, "give_up", f"unsupported part: {parts}")}
     if state.get("fatal"):
         reason = f"a tool failed: {(state.get('problem') or '')[:200]}"
         spoken = "Sorry, something went wrong on my side. Please try again in a moment."
@@ -752,7 +792,7 @@ def stream_agent(graph, session_id, text, circuit, debug_break="", board=DEFAULT
         "user_circuit": json.loads(json.dumps(circuit)),
         "attempts": 0, "history": [], "hex": "", "full_code": "", "report": {},
         "explanation": {}, "spoken_summary": "",
-        "problem": None, "problem_stage": None, "fatal": False,
+        "problem": None, "problem_stage": None, "fatal": False, "unsupported": [],
         "last_error_norm": None, "repeat_error": False, "status": None,
         "steps": [], "started_at": time.time(),
         "debug_break": debug_break, "break_done": False,

@@ -30,6 +30,32 @@ The user wants a **production-level** project, not a demo-only one: do not drop 
 | Raspberry Pi Pico | next, when the user asks. rp2040js (MIT) on npm; its bootrom is not in the package; compiling needs the arduino-pico core (large download; keep it inside the project if possible). Several unknowns, so test before promising |
 | ESP32, STM32 | no open-source engine. Wokwi CI (cloud, quota 50 free minutes / 30 days) is parked by the user |
 
+## Next big step: a real component library with full pins and wiring (agreed with the user, Nov 9)
+The user wants **as many components as possible, each with its real pins** (e.g. a relay module has VCC, GND, IN on the control side and COM, NO, NC on the switch side). Today each part has exactly one Arduino pin and the 5V/GND wires are drawing only. Plan, in order (do it carefully, with tests, as was done for the Mega):
+
+1. **Foundation (about 2 days):**
+   - **Netlist circuit format:** parts with named pins, plus wires between any two pins, e.g. `{"parts":[{"id":"RELAY1","type":"relay_module"}], "wires":[["RELAY1.IN","BOARD.7"],["RELAY1.COM","BOARD.5V"],["RELAY1.NO","LED2.A"]]}`. The backend writes `#define` lines for the Arduino-connected signal pins (`RELAY1_IN_PIN`).
+   - **Logic-level circuit solver**, shared by the browser and the verifier (like `avr_chips.mjs`):
+     - group connected pins into nets;
+     - drive nets from Arduino outputs, 5V and GND, and part outputs;
+     - merge nets through closed switches, buttons and relay contacts;
+     - compute each load from its pins (an LED lights when anode is HIGH and cathode LOW; PWM gives brightness).
+     - Not SPICE; this is the Wokwi/Tinkercad level.
+   - **One model file per component:** pins (name, role), picture element, behaviour (step function), what the verifier can measure, and wiring hints.
+   - **UI:** real pin-to-pin wiring (click a pin, then another pin), wires drawn from the netlist, and auto-wiring when a part is added.
+   - **Agent:**
+     - the plan prompt gets a compact component catalog;
+     - checks can target parts ("LED2 lit", "relay closed", "motor speed");
+     - preflight finds wiring mistakes: an LED without a resistor, an output shorted to GND or 5V, two outputs on one net, a relay coil driven straight from a pin, a floating input.
+   - Convert the 5 existing parts and keep every test passing.
+2. **Simple parts:** relay module (VCC, GND, IN | COM, NO, NC), bare relay KS2E (`wokwi-ks2e-m-dc5`), slide switch (1, 2, 3), tilt switch, DIP switch (8), resistor, NPN transistor (B, C, E; own picture), diode (own picture), RGB LED (R, G, B, COM), 7-segment (A-G, DP, COM), LED bar graph, photoresistor module (AO, DO), NTC temperature (OUT), PIR (OUT), flame, gas and sound sensors (AO, DO), slide potentiometer, analog joystick (VRX, VRY, SW).
+3. **Timing parts:** stepper motor with A4988 (STEP, DIR, EN) or ULN2003 (IN1-4), DC motor with L298N (IN1, IN2, ENA, OUT1, OUT2; no wokwi picture, draw our own), HC-SR04 (TRIG, ECHO; simulate the echo pulse), rotary encoder KY-040 (CLK, DT, SW), membrane keypad 4x4 (R1-R4, C1-C4).
+4. **Protocol parts (each needs its own chip emulated in JS):** LCD 16x2/20x4 first (HD44780 4-bit, then I2C), SSD1306 OLED, NeoPixel, TM1637, DHT22, MPU6050, DS1307, HX711, IR remote.
+
+wokwi-elements has pictures for: 7segment, analog-joystick, biaxial-stepper, big-sound-sensor, buzzer, dht22, dip-switch-8, ds1307, flame-sensor, gas-sensor, hc-sr04, heart-beat-sensor, hx711, ili9341, ir-receiver, ir-remote, ks2e-m-dc5 (relay), ky-040, lcd1602, lcd2004, led, led-bar-graph, membrane-keypad, microsd-card, mpu6050, neopixel, neopixel-matrix, ntc-temperature-sensor, photoresistor-sensor, pir-motion-sensor, potentiometer, pushbutton, resistor, rgb-led, servo, slide-potentiometer, slide-switch, sound sensors, ssd1306, stepper-motor, tilt-switch, tm1637.
+
+**Until then:** a request for any other part stops at once with an honest message ("I can't simulate a relay yet. Right now I can use ..."). It comes from the `unsupported` field in the plan reply, or from preflight seeing a hardware library include such as `LiquidCrystal.h` (`HARDWARE_LIBRARIES` in `graph.py`). This was added after a run where the model quietly dropped the LCD and "passed" with an LED check; that must never happen.
+
 ## Open items, in priority order (Phase 5: Nov 9, then record and post on Nov 10)
 1. **Real microphone test.** The old laptop's mic is broken. Options: the new laptop's mic, earphones with a mic, or the phone (see 5).
 2. **The user listens to Timbre Hindi and Kannada** (regenerate samples with `/speak`; the old ones were in the old laptop's `out/voice-test/`). If they sound wrong, try another voice: `GNANI_TTS_VOICE=Lakshmi` (v3.0 voices: Shivani [default], Avinash, Lakshmi, Kalpana, Shubham, Prakash, Devansh, Yashraj, Chetana, Vasudha, Riyaa, Tarika, Harshad).
