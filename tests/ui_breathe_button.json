@@ -1,0 +1,15 @@
+[
+  {"shot": "1-initial.png"},
+  {"eval": "document.querySelector('#runBtn').click()", "sleep": 4000},
+  {"eval": "({status: document.querySelector('#status').textContent, led: document.querySelector('wokwi-led').value, uno13: document.querySelector('#uno').led13, time: document.querySelector('#simTime').textContent})", "print": "after manual Compile & Run"},
+  {"eval": "(()=>{const s=document.querySelector('.part select'); s.value='9'; s.dispatchEvent(new Event('change')); return document.querySelector('#code').value.split('\\n').slice(0,3).join(' | ')})()", "print": "after moving LED1 to pin 9, code starts"},
+  {"eval": "(()=>{document.querySelector('#addType').value='button'; document.querySelector('#addBtn').click(); return [...document.querySelectorAll('.part-label strong')].map(e=>e.textContent+':'+e.nextSibling.value).join(', ')})()", "print": "parts after adding a button"},
+  {"eval": "document.querySelector('#request').value='make the LED breathe slowly, and when I press the button keep it fully on'; document.querySelector('#askBtn').click(); 'asked'"},
+  {"waitFor": "/Verified|could not|failed/.test(document.querySelector('#agentStatus').textContent)", "timeout": 120000},
+  {"sleep": 3500},
+  {"eval": "({agent: document.querySelector('#agentStatus').textContent, steps: [...document.querySelectorAll('#steps li')].map(l=>l.textContent), verified: [...document.querySelectorAll('#exVerified li')].map(l=>l.textContent), spoken: document.querySelector('#exSpoken').textContent, led: document.querySelector('wokwi-led').brightness})", "print": "agent result"},
+  {"shot": "2-after-agent.png"},
+  {"eval": "document.querySelector('wokwi-pushbutton').dispatchEvent(new Event('button-press')); 'pressed'", "sleep": 1500},
+  {"eval": "({ledBrightness: document.querySelector('wokwi-led').brightness, ledOn: document.querySelector('wokwi-led').value})", "print": "while button held (expect full brightness)"},
+  {"shot": "3-button-held.png"}
+]

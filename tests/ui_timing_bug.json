@@ -1,0 +1,11 @@
+[
+  {"eval": "document.querySelector('#newSessionBtn').click(); const s=document.querySelector('.part select'); s.value='9'; s.dispatchEvent(new Event('change')); document.querySelector('#debugBreak').value='timing'; document.querySelector('#request').value='make the LED breathe'; document.querySelector('#askBtn').click(); 'asked'"},
+  {"waitFor": "/Verified|could not|failed/.test(document.querySelector('#agentStatus').textContent)", "timeout": 150000},
+  {"sleep": 3000},
+  {"eval": "({agent: document.querySelector('#agentStatus').textContent, steps: [...document.querySelectorAll('#steps li')].map(l=>l.textContent), verified: [...document.querySelectorAll('#exVerified li')].map(l=>l.textContent), fixes: [...document.querySelectorAll('#exFixes li')].map(l=>l.textContent)})", "print": "timing-bug run"},
+  {"shot": "timing-bug.png"},
+  {"eval": "document.querySelector('#debugBreak').value=''; document.querySelector('#request').value='slower'; document.querySelector('#askBtn').click(); 'asked follow-up'"},
+  {"waitFor": "!document.querySelector('#askBtn').disabled && /Verified|could not|failed/.test(document.querySelector('#agentStatus').textContent) && document.querySelectorAll('#steps li').length > 0 && /slower|Done/.test([...document.querySelectorAll('#steps li')].map(l=>l.textContent).join(' '))", "timeout": 150000},
+  {"sleep": 1000},
+  {"eval": "({agent: document.querySelector('#agentStatus').textContent, verified: [...document.querySelectorAll('#exVerified li')].map(l=>l.textContent), spoken: document.querySelector('#exSpoken').textContent})", "print": "follow-up 'slower'"}
+]

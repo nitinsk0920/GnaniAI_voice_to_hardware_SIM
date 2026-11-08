@@ -1,0 +1,10 @@
+[
+  {"eval": "document.querySelector('#newSessionBtn').click(); for (const t of ['button','servo','buzzer','potentiometer']) { document.querySelector('#addType').value=t; document.querySelector('#addBtn').click(); } 'built'", "sleep": 800},
+  {"eval": "({wires: document.querySelectorAll('#wires path').length, parts: [...document.querySelectorAll('.part-label strong')].map(e=>e.textContent+':'+e.nextSibling.value).join(', ')})", "print": "wires drawn"},
+  {"shot": "wiring-5parts.png"},
+  {"eval": "document.querySelector('#newSessionBtn').click(); document.querySelector('#request').value='make the LED breathe'; document.querySelector('#askBtn').click(); 'asked'"},
+  {"waitFor": "/Verified|could not|failed/.test(document.querySelector('#agentStatus').textContent)", "timeout": 150000},
+  {"sleep": 1500},
+  {"eval": "({notice: document.querySelector('#wiringNotice').hidden ? '(hidden)' : document.querySelector('#wiringNotice').textContent, highlighted: [...document.querySelectorAll('.part.changed strong')].map(e=>e.textContent), pin: document.querySelector('.part select').value, spoken: document.querySelector('#exSpoken').textContent})", "print": "breathe with LED on 13"},
+  {"shot": "rewire-notice.png"}
+]

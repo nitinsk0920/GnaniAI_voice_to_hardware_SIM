@@ -1,0 +1,10 @@
+{
+  "name": "verify",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Headless avr8js run used by the backend to measure simulated pins",
+  "type": "module",
+  "dependencies": {
+    "avr8js": "^0.21.1"
+  }
+}
