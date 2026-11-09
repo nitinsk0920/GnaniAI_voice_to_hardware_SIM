@@ -7,6 +7,9 @@ API keys (BYOK): each request may bring the visitor's own keys as headers (X-Gro
 X-Gnani-Key; Live mode sends the Gnani key in its first WebSocket message). They are used for that
 request only and never stored or logged. Without them the keys in .env are used, unless
 REQUIRE_USER_KEYS=1 (a public server), where visitors must bring their own. See keys.py.
+
+Public server (Dockerfile): the built page (sim/dist) is served from "/" by this app, RATE_LIMIT=1
+limits requests per visitor and builds running at once (limits.py).
 """
 import asyncio
 import itertools
@@ -27,11 +30,13 @@ import websockets
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import gnani
 import graph as agent
 import keys
+import limits
 from compiler import compile_sketch
 from llm import LLMError, has_key, provider_info
 
@@ -53,12 +58,18 @@ GRAPH = agent.build_graph()
 NO_LLM_KEY = "no LLM API key: add a Groq or Gemini key with the 🔑 API keys button"
 
 
-def origin_allowed(origin, host):
-    """Our own page: the Vite dev server on localhost, or a page served by this backend (same host)."""
+def origin_allowed(origin, host, forwarded_host=None):
+    """Our own page: the Vite dev server on localhost, or a page served by this backend (same host;
+    behind a proxy such as Hugging Face's, the host the visitor used arrives as X-Forwarded-Host)."""
     if re.fullmatch(LOCAL_ORIGIN, origin or ""):
         return True
     netloc = urlparse(origin or "").netloc
-    return bool(netloc) and netloc == host
+    return bool(netloc) and netloc in (host, forwarded_host)
+
+
+def visitor_ip(conn):
+    """The visitor's address (a Request or a WebSocket), for the per-visitor limits."""
+    return limits.client_ip(conn.headers, conn.client.host if conn.client else "")
 
 
 def gnani_key_or_401(request):
@@ -128,6 +139,7 @@ async def transcribe_route(request: Request):
     if len(audio) > MAX_AUDIO_BYTES:
         raise HTTPException(status_code=413, detail="recording too long (max about 30 s)")
     key = gnani_key_or_401(request)
+    limits.check("voice", visitor_ip(request))
     try:
         return gnani.transcribe(audio, key=key)
     except gnani.GnaniError as e:
@@ -138,6 +150,7 @@ async def transcribe_route(request: Request):
 def speak_route(req: SpeakRequest, request: Request):
     """Text in, audio out (Timbre). Only the short spoken summary is sent here, never code."""
     key = gnani_key_or_401(request)
+    limits.check("voice", visitor_ip(request))
     try:
         audio, content_type = gnani.speak(req.text, req.language, key=key)
     except gnani.GnaniError as e:
@@ -150,7 +163,9 @@ def speak_stream_route(req: SpeakRequest, request: Request):
     """Live mode: Timbre streaming. The body is raw 16-bit mono PCM at the rate in X-Sample-Rate,
     sent while it is generated. The first chunk is fetched before answering, so a Gnani error
     becomes a proper HTTP error instead of a cut-off stream."""
-    chunks = gnani.speak_stream(req.text, req.language, key=gnani_key_or_401(request))
+    key = gnani_key_or_401(request)
+    limits.check("voice", visitor_ip(request))
+    chunks = gnani.speak_stream(req.text, req.language, key=key)
     try:
         first = next(chunks)
     except StopIteration:
@@ -177,10 +192,17 @@ async def live_stt(browser: WebSocket):
     .env is used), then 1,024-byte PCM frames (16 kHz, 16-bit mono, every 32 ms) and the
     {"type":"commit"} control frame. Us -> browser: Prisma's JSON messages (connected, speech_start,
     processing, transcript, error), plus {"type":"error"} if Gnani cannot be reached."""
-    if not origin_allowed(browser.headers.get("origin"), browser.headers.get("host")):
+    if not origin_allowed(browser.headers.get("origin"), browser.headers.get("host"),
+                          browser.headers.get("x-forwarded-host")):
         await browser.close(code=1008)  # only our own page may use this relay
         return
     await browser.accept()
+    try:
+        limits.check("live", visitor_ip(browser))
+    except HTTPException as e:
+        await browser.send_json({"type": "error", "message": e.detail})
+        await browser.close()
+        return
     user_key = ""
     try:
         first = await asyncio.wait_for(browser.receive(), timeout=10)
@@ -263,7 +285,8 @@ def session_route(session_id: str):
 
 
 @app.post("/compile")
-def compile_route(req: CompileRequest):
+def compile_route(req: CompileRequest, request: Request):
+    limits.check("compile", visitor_ip(request))
     if not req.code.strip():
         return {"ok": False, "error": "code is empty"}
     if len(req.code.encode("utf-8")) > MAX_CODE_BYTES:
@@ -285,6 +308,8 @@ def run_route(req: RunRequest, request: Request):
     if not keys.call(user_keys, has_key):
         raise HTTPException(status_code=401,
                             detail=NO_LLM_KEY + ("" if keys.user_keys_required() else " (or set one in .env)"))
+    limits.check("run", visitor_ip(request))
+    build_slot = limits.start_build()  # released when the stream ends (or the visitor leaves)
 
     mode = "compile" if req.debug_break is True else (req.debug_break or "")
 
@@ -300,6 +325,15 @@ def run_route(req: RunRequest, request: Request):
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:  # report instead of silently cutting the stream
             yield f"data: {json.dumps({'type': 'error', 'message': f'{type(e).__name__}: {e}'})}\n\n"
+        finally:
+            limits.end_build(build_slot)
 
     return StreamingResponse(events(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache"})
+
+
+# The built page (npm run build -> sim/dist), served from "/" on the public server. Mounted last, so
+# the API routes above win. In development the page comes from the Vite dev server instead.
+PAGE_DIR = Path(__file__).resolve().parent.parent / "sim" / "dist"
+if PAGE_DIR.is_dir() and os.getenv("SERVE_PAGE", "1") != "0":
+    app.mount("/", StaticFiles(directory=PAGE_DIR, html=True), name="page")

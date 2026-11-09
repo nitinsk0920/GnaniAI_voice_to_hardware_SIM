@@ -1,0 +1,10 @@
+.git
+.env
+.venv
+**/node_modules
+**/__pycache__
+out
+sim/dist
+docs
+backend/gnani.db*
+CLAUDE.md

@@ -80,6 +80,8 @@ print("line-by-line helpers ok")
 
 # ---------- llm.py: retry and backup provider when the provider is busy (fake HTTP, no real calls) ----------
 import os, httpx, llm
+for setting in ("REQUIRE_USER_KEYS", "RATE_LIMIT"):  # these tests assume local defaults (the Docker image sets both)
+    os.environ.pop(setting, None)
 
 class FakeResponse:
     def __init__(self, status, wait=None):
@@ -290,6 +292,29 @@ try:
     finally:
         main.websockets.connect = real_connect
     print("routes: 401 without keys, keys from headers, Live relay key + origin check ok")
+
+    # Public server limits (limits.py): per visitor, and builds at the same time (slots expire).
+    import limits
+    from fastapi import HTTPException
+    limits.check("run", "1.2.3.4")                                           # off by default: never counts
+    assert not limits._hits and limits.start_build() is None
+    os.environ["RATE_LIMIT"] = "1"
+    for i in range(20):
+        limits.check("run", "1.2.3.4", now=1000 + i)
+    try: limits.check("run", "1.2.3.4", now=1100); raise AssertionError("21st request must be refused")
+    except HTTPException as e: assert e.status_code == 429 and "try again in" in e.detail
+    limits.check("run", "5.6.7.8", now=1100)                                 # another visitor is fine
+    limits.check("run", "1.2.3.4", now=1000 + 600 + 1)                       # the window moved on
+    assert limits.client_ip({"x-forwarded-for": "9.9.9.9, 10.0.0.1"}, "10.0.0.2") == "9.9.9.9"
+    slots = [limits.start_build(now=50) for _ in range(limits.MAX_PARALLEL_BUILDS)]
+    try: limits.start_build(now=60); raise AssertionError("must be busy")
+    except HTTPException as e: assert e.status_code == 503
+    limits.end_build(slots[0]); limits.end_build(limits.start_build(now=61))   # a released slot is reusable
+    assert limits.start_build(now=50 + limits.BUILD_MAX_S + 1)               # stuck slots expire
+    assert main.origin_allowed("https://me-app.hf.space", "10.0.0.5:7860", "me-app.hf.space")
+    assert not main.origin_allowed("https://evil.example", "me-app.hf.space", "me-app.hf.space")
+    limits._hits.clear(); limits._builds.clear(); os.environ.pop("RATE_LIMIT")
+    print("public server limits ok")
 finally:
     g.chat_json = fake_llm
     llm.httpx.post = real_post
