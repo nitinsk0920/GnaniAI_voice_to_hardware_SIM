@@ -10,7 +10,7 @@
   <body>
     <header>
       <div>
-        <h1>Voice-to-Hardware Simulator</h1>
+        <h1><span class="brand">Voice-to-Hardware</span> Simulator</h1>
         <p class="hint">Build a circuit, then chat with the agent. It writes the Arduino code, runs it, measures the pins, fixes itself until it works, and explains every line.</p>
       </div>
       <div class="header-actions">
@@ -36,7 +36,7 @@
             <div id="boardWrap" class="board" data-board="uno"><wokwi-arduino-uno id="mcu"></wokwi-arduino-uno></div>
             <svg id="wires" aria-hidden="true"></svg>
           </div>
-          <p class="caption">Click buttons and turn knobs while the code runs. "~" marks PWM pins (needed for fading, brightness and other analogWrite effects). Wires: colored = signal, red = 5V, black = GND.</p>
+          <p class="caption">Click buttons and turn knobs while the code runs. "~" marks PWM pins (needed for fading, brightness and other analogWrite effects). Wires: colored = signal, red = 5V, grey = GND.</p>
         </section>
 
         <section class="card">

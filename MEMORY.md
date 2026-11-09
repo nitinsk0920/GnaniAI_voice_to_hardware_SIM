@@ -82,7 +82,10 @@ wokwi-elements has pictures for: 7segment, analog-joystick, biaxial-stepper, big
    - change `API` in `sim/main.js` to `/api`;
    - the user accepts the certificate warning on the phone and allows Node through the Windows firewall (private networks).
 6. **Not built:** 7-segment display (optional), LCD and DC motor (too big for the deadline). Phone mode as in 5.
-7. **After the demo:** BYOK and deployment (CLAUDE.md section 9).
+7. **After the demo:** BYOK and deployment (CLAUDE.md section 9). Decided with the user on Nov 9:
+   - **Host: Hugging Face Spaces (Docker, free CPU tier: 2 vCPU, 16 GB RAM, HTTPS, WebSockets)**, not Render free (0.1 CPU / 512 MB would make compile + simulate slow enough to hit the 90 s cap; sleeps after 15 min).
+   - **BYOK for both keys:** visitors always bring their own **Gnani key** (Prisma/Timbre) **and their own LLM key** (Groq or Gemini); the deployed server uses no keys of ours. Keys live only in the browser tab, go with each request (headers; the Live WebSocket gets the Gnani key in its first message, never in the URL) and are never stored or logged by the backend. Add a per-IP rate limit. SQLite sessions are lost on restart (fine).
+   - **Order:** record and post the demo video with the local app first, then BYOK + Dockerfile + deploy, then add a "Try it" link to the post.
 
 ## Known behaviours and gotchas (more in CLAUDE.md "notes")
 - LLM output varies between runs. Preflight guards against:

@@ -84,7 +84,7 @@ export function drawGraph(canvas, rows, nowMs, spanMs = 3000) {
   const labelW = 92;
   const plotW = Math.max(10, width - labelW - 8);
   const cols = Math.floor(plotW);
-  ctx.font = '12px system-ui, sans-serif';
+  ctx.font = `12px ${css.fontFamily || 'system-ui, sans-serif'}`;
   ctx.textBaseline = 'middle';
 
   rows.forEach((row, r) => {

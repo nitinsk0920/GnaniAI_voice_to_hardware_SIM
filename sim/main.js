@@ -1,6 +1,10 @@
 // Page logic: chat with the agent (POST /run, streamed), compile by hand (POST /compile),
 // run the hex live, and keep the session across page reloads (GET /session/<id>).
 import '@wokwi/elements'; // registers <wokwi-led>, <wokwi-servo>, <wokwi-arduino-uno>, ...
+// Fonts, bundled with the app (no Google Fonts request): headings, text, code.
+import '@fontsource-variable/space-grotesk';
+import '@fontsource-variable/inter';
+import '@fontsource-variable/jetbrains-mono';
 import { startSimulation, stopSimulation } from './simulator.js';
 import { resetSignals, record, prune, drawGraph } from './signals.js';
 import { startRecording, stopRecording, isRecording } from './voice.js';

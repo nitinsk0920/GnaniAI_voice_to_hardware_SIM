@@ -21,7 +21,10 @@ export const PART_TYPES = {
   potentiometer: { label: 'Potentiometer', prefix: 'POT',    pins: analogPins, prefer: ['A0', 'A1', 'A2', 'A3'] },
 };
 const LED_COLORS = ['red', 'green', 'blue', 'yellow', 'orange', 'white'];
-const GRAPH_COLORS = ['#d9480f', '#2b8a3e', '#1971c2', '#ae3ec9', '#e67700', '#0c8599', '#c2255c'];
+// Signal colors (wires and graph), bright enough for the dark theme. 6-digit hex: the graph adds alpha.
+const GRAPH_COLORS = ['#ff8a4c', '#3fcf8e', '#5b8cff', '#c084fc', '#f4b44c', '#22d3ee', '#f472b6'];
+const WIRE_5V = '#ff5d6c';
+const WIRE_GND = '#8892a9';
 const SERVO_MIN_US = 544;
 const SERVO_MAX_US = 2400; // Servo library defaults
 
@@ -140,7 +143,7 @@ function drawWires() {
     for (const [partPin, boardPin] of PART_WIRES[c.type] || []) {
       // SIG = the part's own pin; GND and VCC map to this board's power pin names.
       const name = boardPin === SIG ? String(c.pin) : boardPin === 'GND' ? board.gnd_pin : board.vcc_pin;
-      const color = boardPin === SIG ? GRAPH_COLORS[i % GRAPH_COLORS.length] : boardPin === 'VCC' ? '#d6336c' : '#222';
+      const color = boardPin === SIG ? GRAPH_COLORS[i % GRAPH_COLORS.length] : boardPin === 'VCC' ? WIRE_5V : WIRE_GND;
       wires.push({ el, partPin, unoPin: name, color });
     }
   });
