@@ -315,6 +315,59 @@ try:
     assert not main.origin_allowed("https://evil.example", "me-app.hf.space", "me-app.hf.space")
     limits._hits.clear(); limits._builds.clear(); os.environ.pop("RATE_LIMIT")
     print("public server limits ok")
+
+    # Code guard (compiler.py): no server file can be pulled in, however the #include is disguised.
+    from compiler import code_safety_problem, safe_env
+    blocked = {
+        "plain include":         '#include "/etc/passwd"\nvoid setup(){}\nvoid loop(){}',
+        "angle include":         '# include </etc/passwd>',
+        "comment before #":      '/**/#include "/etc/passwd"',
+        "string-comment trick":  'const char* a = "/*";\n/**/#include "/etc/passwd"\n// */',
+        "escaped quote trick":   'const char* s = "\\"/*";\n#include "/etc/passwd"\n// */',
+        "char literal trick":    "char c = '\"';\n#include \"/etc/passwd\"",
+        "line splice":           '#inc\\\nlude "/etc/passwd"',
+        "digraph %:":            '%:include "/etc/passwd"',
+        "trigraph ??=":          '??=include "/etc/passwd"',
+        "include via macro":     '#define F "/etc/passwd"\n#include F',
+        "after a block comment": '/* a\n*/ #include "/proc/self/environ"',
+        "not a raw string":      'int xR"(\n#include "/etc/passwd"\n)";',
+        "pragma":                '#pragma GCC poison digitalWrite',
+        "_Pragma":               '_Pragma("message(\\"x\\")")',
+        "__has_include":         '#if __has_include("/etc/passwd")\n#endif',
+        "inline asm":            'void f() { asm("nop"); }',
+        "line":                  '#line 1 "/etc/passwd"',
+        "include_next":          '#include_next <Servo.h>',
+        "import":                '#import "/etc/passwd"',
+        "Servo by path":         '#include "Servo.h"',
+    }
+    for name, code in blocked.items():
+        assert code_safety_problem(code), f"must be blocked: {name}"
+    allowed = {
+        "blink with defines":    "#define LED1_PIN 13\nvoid setup() {\n  pinMode(LED1_PIN, OUTPUT);\n}\nvoid loop() {}",
+        "servo":                 "#include <Servo.h>\n#include<Arduino.h>\n#  include <Servo.h>\nServo s;",
+        "conditionals":          "#if 1\n#define X 2\n#elif 0\n#else\n#endif\n#ifdef X\n#undef X\n#endif",
+        "text in a string":      'const char* s = "#include \\"/etc/passwd\\"";',
+        "text in comments":      '// #include "/etc/passwd"\n/* #pragma once\n#include "x" */\nint a;',
+        "inside a raw string":   'const char* s = R"(\n#include "/etc/passwd"\n)";',
+        "asm in a name":         "int asmr = 1; int basm = 2;",
+    }
+    for name, code in allowed.items():
+        assert code_safety_problem(code) is None, f"must be allowed: {name}: {code_safety_problem(code)}"
+    assert not compile_sketch('#include "/etc/passwd"\nvoid setup(){}\nvoid loop(){}')["ok"]   # blocked before compiling
+    os.environ["SOME_API_KEY"] = "secret"
+    assert "SOME_API_KEY" not in safe_env() and "PATH" in {k.upper() for k in safe_env()}
+    os.environ.pop("SOME_API_KEY")
+    print(f"code guard ok: {len(blocked)} disguised includes blocked, {len(allowed)} normal sketches allowed")
+
+    # Off-topic or harmful build requests: plan_and_code refuses, give_up answers politely.
+    g.chat_json = lambda system, user, required_keys=(): {"refused": "not about a circuit"}
+    state = {"user_text": "write me an essay", "messages": [{"role": "user", "text": "write me an essay"}],
+             "circuit": c13, "board": "uno", "steps": [], "started_at": 0}
+    out = g.plan_and_code(state)
+    assert out["fatal"] and out["refused"] == "not about a circuit" and g.route({**state, **out}) == "give_up"
+    ended = g.give_up({**state, **out})
+    assert "only help build safe Arduino circuits" in ended["spoken_summary"], ended
+    print("refused build request ok")
 finally:
     g.chat_json = fake_llm
     llm.httpx.post = real_post

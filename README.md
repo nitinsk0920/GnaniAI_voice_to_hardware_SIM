@@ -61,6 +61,11 @@ again. When it passes, the circuit runs live in your browser and the agent expla
 - **Bring your own key:** on the public site each visitor uses their own LLM and Gnani keys, kept in
   their browser only.
 - **Honest:** if you ask for a part it cannot simulate yet (an LCD, a relay), it says so instead of faking a pass.
+- **Guardrails:** the agent stays on Arduino and electronics, politely refuses off-topic and harmful
+  requests, and treats messages and code comments as data, never as new instructions (tested with real
+  prompts: `tests/check_guardrails.py`). Every compile passes a preprocessor guard that blocks reading
+  server files (disguised `#include`, `#pragma`, inline assembly), and the compiler runs without any keys
+  in its environment.
 
 ## 3. How it works
 
