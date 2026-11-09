@@ -1,0 +1,11 @@
+[
+  {"eval": "document.querySelector('#newSessionBtn').click(); window.__states=[]; window.__speak=[]; const t0=performance.now(); new MutationObserver(()=>{const s=document.querySelector('#liveOrb').dataset.state+' | '+document.querySelector('#liveCaption').textContent.slice(0,60); if(window.__states.at(-1)?.s!==s) window.__states.push({t:((performance.now()-t0)/1000).toFixed(1), s});}).observe(document.querySelector('#livePanel'),{subtree:true,childList:true,attributes:true,characterData:true}); const f=window.fetch; window.fetch=async(url,opt)=>{ if(String(url).includes('/speak/stream')){ const e={t:((performance.now()-t0)/1000).toFixed(1), text: JSON.parse(opt.body).text.slice(0,70)}; window.__speak.push(e); try{ const r=await f(url,opt); e.status=r.status; return r;}catch(err){ e.status=String(err.name); throw err;} } return f(url,opt); }; 'instrumented'"},
+  {"eval": "if (!document.querySelector('#liveEarBtn').classList.contains('on')) document.querySelector('#liveEarBtn').click(); document.querySelector('#liveBtn').click(); 'earphones on, clicked Go Live'"},
+  {"waitFor": "document.querySelectorAll('#messages .msg.user').length >= 2", "timeout": 60000},
+  {"eval": "({users: [...document.querySelectorAll('#messages .msg.user')].map(m=>m.innerText.replace(/\\n/g,' ')), caption: document.querySelector('#liveCaption').textContent})", "print": "both utterances heard"},
+  {"waitFor": "document.querySelectorAll('#messages .msg.build').length >= 1 && document.querySelectorAll('#messages .msg.agent:not(.build):not(.welcome):not(.pending)').length >= 1 && !document.querySelector('#askBtn').disabled", "timeout": 180000},
+  {"waitFor": "document.querySelector('#liveOrb').dataset.state === 'listening'", "timeout": 60000},
+  {"eval": "(()=>{const chat=[...document.querySelectorAll('#messages .msg.agent:not(.build):not(.welcome):not(.pending)')].pop(); return {order: [...document.querySelectorAll('#messages .msg')].map(m=>m.classList.contains('user')?'user':m.classList.contains('build')?'build':'chat'), chatReply: chat?.innerText, states: window.__states.map(x=>x.t+'s '+x.s), speak: window.__speak}})()", "print": "interrupt run"},
+  {"shot": "3-interrupt.png"},
+  {"eval": "document.querySelector('#liveEndBtn').click(); 'ended'"}
+]

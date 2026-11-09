@@ -146,7 +146,11 @@ def fake_llm(system, user, required_keys=()):
                 "chat must see the numbered code and the test results"
             assert "User: blink the LED" in user, "chat must see the conversation"
             return {"intent": "chat", "reply": "Line 8 waits 500 ms.", "lines": "8", "spoken": "It waits half a second."}
-        return {"intent": "build"}
+        return {"intent": "build", "ack": "Sure, one moment."}
+    if system == g.FIX_SYSTEM:
+        calls.append("fix")
+        assert "FAILED blink" in user and "pin 13" in user, "fix must get the measured failure"
+        return {"code": BLINK, "note": "restored 500 ms delays", "say": "It blinked too slowly, fixing it."}
     if system == g.PLAN_SYSTEM:
         calls.append("plan")
         return {"circuit": {"components": [{"type": "led", "id": "LED1", "pin": 13}]}, "code": BLINK, "stimulus": [],
@@ -180,4 +184,15 @@ assert snap["hex"] and snap["full_code"].startswith("// Pins") and snap["board"]
 assert snap["messages"][1]["card"]["explanation"]["summary"] == "LED1 blinks."
 assert g.session_snapshot(G, "unknown")["messages"] == []
 print("graph build -> chat -> build ok; session snapshot ok")
+
+# Live narration: the ack and the fix's spoken line arrive as "say" events before the result.
+calls.clear()
+events = list(g.stream_agent(G, "s2", "blink it", json.loads(json.dumps(c13)), debug_break="timing"))
+says = [(e["node"], e["text"]) for e in events if e["type"] == "say"]
+result = events[-1]
+assert says == [("understand", "Sure, one moment."), ("fix", "It blinked too slowly, fixing it.")], says
+assert result["type"] == "result" and result["status"] == "passed" and result["attempts"] == 1, result.get("problem")
+assert calls == ["understand", "plan", "fix", "explain"], calls
+assert [e["type"] for e in events].index("say") < len(events) - 1
+print("live narration (say events) ok")
 print("ALL OFFLINE TESTS PASSED")

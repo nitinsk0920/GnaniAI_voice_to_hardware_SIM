@@ -1,0 +1,13 @@
+[
+  {"eval": "document.querySelector('#newSessionBtn').click(); window.__states=[]; window.__speak=[]; const t0=performance.now(); new MutationObserver(()=>{const s=document.querySelector('#liveOrb').dataset.state+' | '+document.querySelector('#liveState').textContent; if(window.__states.at(-1)?.s!==s) window.__states.push({t:((performance.now()-t0)/1000).toFixed(1), s});}).observe(document.querySelector('#livePanel'),{subtree:true,childList:true,attributes:true,characterData:true}); const f=window.fetch; window.fetch=async(url,opt)=>{ if(String(url).includes('/speak/stream')){ const e={t:((performance.now()-t0)/1000).toFixed(1), text: JSON.parse(opt.body).text}; window.__speak.push(e); try{ const r=await f(url,opt); e.status=r.status; e.firstAudio=((performance.now()-t0)/1000).toFixed(1); return r;}catch(err){ e.status=String(err.name); throw err;} } return f(url,opt); }; 'instrumented'"},
+  {"eval": "document.querySelector('#liveBtn').click(); 'clicked Go Live'", "sleep": 1500},
+  {"eval": "({panel: !document.querySelector('#livePanel').hidden, liveBtnHidden: document.querySelector('#liveBtn').hidden, state: document.querySelector('#liveState').textContent})", "print": "live panel"},
+  {"waitFor": "document.querySelectorAll('#messages .msg.user').length >= 1", "timeout": 30000},
+  {"eval": "({user: document.querySelector('#messages .msg.user').innerText})", "print": "heard"},
+  {"waitFor": "document.querySelectorAll('#messages .msg.build').length >= 1 && !document.querySelector('#askBtn').disabled", "timeout": 150000},
+  {"shot": "1-live-built.png"},
+  {"waitFor": "document.querySelector('#liveOrb').dataset.state === 'listening' && window.__speak.length >= 2", "timeout": 60000},
+  {"eval": "(()=>{const c=[...document.querySelectorAll('#messages .msg.build')].pop(); return {badge: c.querySelector('.badge').textContent, verified: [...c.querySelectorAll('.verified li')].map(l=>l.textContent), states: window.__states.map(x=>x.t+'s '+x.s), speak: window.__speak, caption: document.querySelector('#liveCaption').textContent}})()", "print": "live run"},
+  {"eval": "document.querySelector('#liveEndBtn').click(); ({panelHidden: document.querySelector('#livePanel').hidden, liveBtnVisible: !document.querySelector('#liveBtn').hidden, micVisible: !document.querySelector('#micBtn').hidden})", "print": "after End"},
+  {"shot": "2-ended.png"}
+]

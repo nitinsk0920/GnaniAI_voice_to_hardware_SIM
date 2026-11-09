@@ -195,6 +195,10 @@ export function startPending() {
       if (s.step !== 'understanding') steps.append(stepItem(s));
       scrollDown();
     },
+    addSay(text) {  // what the agent says while it works ("Sure, one moment", "fixing it")
+      steps.before(el('p', 'say', `🗣 ${text}`));
+      scrollDown();
+    },
     remove() { msg.remove(); },
   };
 }

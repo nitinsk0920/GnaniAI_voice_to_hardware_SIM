@@ -219,6 +219,10 @@ Start with the first three; add the rest in order if time allows. All times in m
 | `GET /session/{id}` | `{messages, board, circuit, full_code, hex}` so a reloaded page continues the session. | chat |
 | `POST /transcribe` | Audio in, text out (Prisma). | 4 |
 | `POST /speak` | Text in, audio out (Timbre). | 4 |
+| `WS /live/stt` | Live mode: relays 1,024-byte PCM frames to Prisma streaming and its JSON messages back (adds the key; localhost origins only). | Live |
+| `POST /speak/stream` | Live mode: Timbre streaming; raw 16-bit PCM body, rate in `X-Sample-Rate`. | Live |
+
+`POST /run` also streams `{"type": "say", "node", "text"}` events: the `understand` acknowledgement of a build request (`ack`) and the `fix` line after a measured or compile failure (`say` in the fix reply; never for check-only rewrites). Live mode speaks them at once; the chat shows them in the working bubble.
 
 `POST /run` streams progress as Server-Sent Events from LangGraph's `stream`: `understanding`, `planning`, `preflight`, `compiling (attempt n)`, `verifying`, `fixing: <short reason>`, `explaining`, then a final `result` event: `{kind: "chat", reply, lines, spoken_summary}` or `{kind: "build", ...}` with the section 7.10 payload. `EventSource` cannot send POST, so the browser reads the stream with `fetch` and a `ReadableStream`. The UI shows the events as a live status line; visible self-correction is a highlight of the demo.
 

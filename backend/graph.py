@@ -111,6 +111,7 @@ class State(TypedDict, total=False):
     intent: str               # "build" | "chat" for this message
     reply: str                # chat answer (intent chat)
     reply_lines: str          # code lines the chat answer is about, e.g. "12-14"
+    say: str                  # a short line to speak right away (Live mode): the ack, or what a fix is doing
     messages: list            # the conversation, kept across requests in the session
 
 
@@ -120,7 +121,14 @@ CONTEXT_MESSAGES = 8         # sent to the LLM as "recent conversation"
 
 # ---------- prompts ----------
 
-CODE_RULES = """Rules for the code:
+# How every text that Timbre reads aloud must be written (the voice picks its language from the script).
+SPOKEN_RULES = ("1 or 2 short, friendly sentences that a text-to-speech voice will read aloud, in the SAME language as "
+                "the user's message. Script rules: English in Latin letters; Hindi and Hinglish in Devanagari; Kannada "
+                "and Kanglish in Kannada script. Common English device words (LED, servo, buzzer) may stay in Latin "
+                "letters. Write every number as words in that language (e.g. \"pin nine\", \"ಒಂಬತ್ತನೇ ಪಿನ್\", \"पिन नौ\"). "
+                "No code words (no millis, analogWrite, LED1_PIN), no symbols, and no words from other languages or scripts.")
+
+CODE_RULES ="""Rules for the code:
 - Write for the board described under "Board" in the request. No #include lines, except #include <Servo.h> when the circuit has a servo. No Serial.
 - The backend adds one line per part: #define <ID>_PIN <pin> (for example LED1_PIN). Use only those names for pins. Never write a literal pin number or LED_BUILTIN. Do not write #define lines for pins yourself.
 - analogWrite only on the board's PWM (~) pins, and follow the board notes (which timers the Servo library and tone() take over).
@@ -167,7 +175,8 @@ The user may write in English, Hindi, Kannada, Hinglish or Kanglish. Understand 
 The request may be a short follow-up ("slower", "yes, do that", "same but on pin 6"): read it together with the recent conversation."""
 
 FIX_SYSTEM = f"""You fix an Arduino sketch that failed to compile or failed a measured check in the simulator. Reply with JSON only:
-{{"code":"<the full corrected sketch, without the #define pin lines>","note":"one short sentence: what you changed and why"}}
+{{"code":"<the full corrected sketch, without the #define pin lines>","note":"one short sentence: what you changed and why","say":"..."}}
+say: one short spoken sentence telling the user what the test showed and that you are fixing it, like "The first try breathed four times too slowly, so I'm speeding it up." ({SPOKEN_RULES})
 Trust the measurements: they come from running your code. Fix the code so it does what the user asked.
 For a timing problem, scale your delays and intervals by (wanted / measured): e.g. measured cycle 500 ms, wanted 2000 ms -> make every delay or interval 4 times longer. Aim for the middle of the expected range.
 Add "checks" and "stimulus" only if the checks misread the user's request or the problem says a check itself is invalid (never just to match wrong code).
@@ -179,13 +188,6 @@ FIX_CHECKS_SYSTEM = f"""The acceptance checks or stimulus for an Arduino simulat
 {{"checks":[...],"stimulus":[...],"note":"one short sentence: what you changed and why"}}
 
 {CHECKS_DOC}"""
-
-# How every text that Timbre reads aloud must be written (the voice picks its language from the script).
-SPOKEN_RULES = ("1 or 2 short, friendly sentences that a text-to-speech voice will read aloud, in the SAME language as "
-                "the user's message. Script rules: English in Latin letters; Hindi and Hinglish in Devanagari; Kannada "
-                "and Kanglish in Kannada script. Common English device words (LED, servo, buzzer) may stay in Latin "
-                "letters. Write every number as words in that language (e.g. \"pin nine\", \"ಒಂಬತ್ತನೇ ಪಿನ್\", \"पिन नौ\"). "
-                "No code words (no millis, analogWrite, LED1_PIN), no symbols, and no words from other languages or scripts.")
 
 SUPPORTED_TEXT = ("Parts the simulator can use: LED, push button, servo, buzzer, potentiometer. "
                   "Boards: Arduino Uno, Nano and Mega 2560.")
@@ -204,7 +206,7 @@ EXPLAIN_SYSTEM = f"""You explain a working Arduino sketch to a beginner. Reply w
 
 CONVERSE_SYSTEM = f"""You are the assistant in a chat inside an Arduino simulator. The user builds a circuit on screen and talks to you by voice or text, in English, Hindi, Kannada, Hinglish or Kanglish. A separate builder writes, compiles, runs and measures the code. Decide whether the latest message needs the builder, and if not, answer it yourself. Reply with JSON only.
 
-If the user wants the hardware or the code to change in any way, reply {{"intent":"build"}}. That includes new behavior, faster or slower, adding, moving or removing a part, "do it again", "yes, do that" after you offered a change, and short follow-ups like "slower", "brighter", "on pin 6", "can you make it blink?".
+If the user wants the hardware or the code to change in any way, reply {{"intent":"build","ack":"..."}}. ack: one short, friendly spoken sentence saying what you are about to do, like "Sure, I'll make the LED breathe slowly. Give me a few seconds." ({SPOKEN_RULES}). A change request includes new behavior, faster or slower, adding, moving or removing a part, "do it again", "yes, do that" after you offered a change, and short follow-ups like "slower", "brighter", "on pin 6", "can you make it blink?".
 
 Otherwise reply {{"intent":"chat","reply":"...","lines":"...","spoken":"..."}}. That covers questions about the current code, circuit, wiring, test results or fixes ("explain line 7", "why millis and not delay?", "what happens when I press the button?"), general Arduino and electronics questions, greetings, thanks and "what can you do?".
 - reply: answer from the code, circuit and test results given. Refer to code as "line 12" or "lines 12-14" (the user's editor shows these numbers). Be brief: 2 to 6 short sentences or a short list of "- " lines, unless the user asks for detail (e.g. "explain everything line by line"). Put code in `backticks`. Never claim a measurement that is not in the test results. Do not write a whole new sketch here. If you are not sure whether the user wants a change, say what you would change and ask them to confirm.
@@ -611,7 +613,8 @@ def understand(state):
         return {**update, "intent": "build", "steps": add_step(state, "understanding", "treating it as a build request")}
     reply = str(out.get("reply") or "").strip()
     if out.get("intent") != "chat" or not reply:
-        return {**update, "intent": "build", "steps": add_step(state, "understanding", "a request to build")}
+        return {**update, "intent": "build", "say": clean_spoken(str(out.get("ack") or "")),
+                "steps": add_step(state, "understanding", "a request to build")}
     lines = str(out.get("lines") or "").strip()
     return {**update, "intent": "chat", "reply": reply,
             "reply_lines": lines if re.fullmatch(r"\d+(\s*-\s*\d+)?", lines) else "",
@@ -765,7 +768,8 @@ def fix(state):
         f"- attempt {h['attempt']} ({h['stage']}): {h['problem'][:300]} -> changed: {h['change_made']}"
         for h in state.get("history", [])) or "none"
     user = (
-        f"Request: {state['user_text']}\n\n"
+        f"Request: {state['user_text']}\n"
+        f"{script_hint(state['user_text'])} (for say)\n\n"
         f"{board_facts(get_board(state.get('board')))}\n\n"
         f"Circuit: {json.dumps(state['circuit'])}\n\n"
         f"Pin defines added by the backend:\n{define_block(state['circuit'])}"
@@ -797,6 +801,10 @@ def fix(state):
     update = {"problem": None}
     if not checks_wrong:
         update["code"] = strip_pin_defines(out["code"])
+    # Speak only about failures the user would understand (a measurement or a compile error);
+    # rewriting the test's own checks is internal.
+    if state.get("problem_stage") in ("verify", "compile") and out.get("say"):
+        update["say"] = clean_spoken(str(out["say"]))
     for key, kind in (("checks", list), ("stimulus", list), ("circuit", dict)):
         if isinstance(out.get(key), kind):
             update[key] = out[key]
@@ -976,13 +984,15 @@ def stream_agent(graph, session_id, text, circuit, debug_break="", board=DEFAULT
         "problem": None, "problem_stage": None, "fatal": False, "unsupported": [], "status": None,
         "steps": [], "started_at": time.time(),
         "debug_break": debug_break, "break_done": False,
-        "mode": mode, "via": via, "intent": "", "reply": "", "reply_lines": "",
+        "mode": mode, "via": via, "intent": "", "reply": "", "reply_lines": "", "say": "",
     }
     config = {"configurable": {"thread_id": session_id}, "recursion_limit": 60}
     for update in graph.stream(start, config=config, stream_mode="updates"):
         for node, values in update.items():
             if values and values.get("steps"):
                 yield {"type": "step", **values["steps"][-1]}
+            if values and values.get("say"):  # spoken right away in Live mode
+                yield {"type": "say", "node": node, "text": values["say"]}
 
     final = graph.get_state(config).values
     if final.get("intent") == "chat":

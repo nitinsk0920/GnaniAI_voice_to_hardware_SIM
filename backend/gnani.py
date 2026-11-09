@@ -1,9 +1,15 @@
 """Gnani voice APIs: Prisma (speech-to-text) and Timbre (text-to-speech).
 
 Every Gnani call goes through this file (later, BYOK: pass a per-request key instead of .env).
-Docs: https://docs.gnani.ai  (STT REST: POST /stt/v3, TTS REST: POST /api/v1/tts/inference)
+Docs: https://docs.gnani.ai
+  STT REST:      POST /stt/v3                (one clip, max 30 s; the mic button)
+  STT streaming: WSS  /stt/v3/stream         (Live mode; the server detects start/end of speech)
+  TTS REST:      POST /api/v1/tts/inference  (one MP3)
+  TTS streaming: POST /api/v1/tts/sse        (Live mode; base64 audio chunks as they are generated)
 .env: GNANI_API_KEY (required), GNANI_TTS_VOICE (optional, default Shivani)
 """
+import base64
+import json
 import os
 import re
 
@@ -15,6 +21,9 @@ STT_LANGUAGES = "en-IN,hi-IN,kn-IN"   # our demo languages; Prisma v3.0 accepts 
 STT_KEYTERMS = "LED,servo,buzzer,potentiometer,button,blink,breathe,pin,Arduino"
 TTS_MODEL = "timbre-v3.0"             # every v3.0 voice speaks all 10 languages
 TIMEOUT_S = 30
+
+STT_STREAM_URL = "wss://api.vachana.ai/stt/v3/stream"
+TTS_STREAM_RATE = 24000               # raw 16-bit mono PCM; the browser plays it as it arrives
 
 
 class GnaniError(Exception):
@@ -76,6 +85,61 @@ def language_of(text):
     if devanagari > 0:
         return "hi-IN"
     return "en-IN"
+
+
+def stt_stream_headers():
+    """WebSocket upgrade headers for Prisma streaming. Tested Nov 9:
+    - the stream refuses a list of languages ("exactly one locale is required"), so indic-auto lets
+      Prisma v3.0 pick English, Hindi or Kannada per utterance (it returns detected_language_code);
+    - VAD from the docs' "clean web microphone" preset: speech threshold 0.5, 700 ms of silence ends a turn;
+    - idle timeout raised to 15 min (the session cap), so thinking pauses do not close it."""
+    return {
+        "x-api-key-id": _key(),
+        "model": STT_MODEL,
+        "x-model": STT_MODEL,           # older spelling, also accepted
+        "language_code": "indic-auto",
+        "format": "codemix",
+        "keyterms": STT_KEYTERMS,
+        "x-sample-rate": "16000",
+        "x-vad-threshold": "0.5",
+        "x-min-silence-ms": "700",
+        "x-idle-timeout-sec": "900",
+    }
+
+
+def speak_stream(text, language=None, rate=TTS_STREAM_RATE):
+    """Timbre SSE. Yields raw 16-bit mono PCM chunks (`rate` Hz) while the speech is generated,
+    so playback can start after about 1.5 s instead of waiting for the whole clip."""
+    text = (text or "").strip()
+    if not text:
+        raise GnaniError("nothing to speak")
+    body = {
+        "text": text[:600],
+        "model": TTS_MODEL,
+        "voice": os.getenv("GNANI_TTS_VOICE", "Shivani"),
+        "language": language or language_of(text),
+        "speed": 1.0,
+        "audio_config": {"sample_rate": rate, "num_channels": 1, "sample_width": 2,
+                         "encoding": "linear_pcm", "container": "raw"},
+    }
+    try:
+        with httpx.stream("POST", f"{BASE_URL}/api/v1/tts/sse", json=body, timeout=TIMEOUT_S,
+                          headers={"X-API-Key-ID": _key(), "Content-Type": "application/json"}) as r:
+            if r.status_code != 200:
+                r.read()
+                raise GnaniError(f"text-to-speech failed: {_error_text(r)}")
+            event = None
+            for line in r.iter_lines():
+                if line.startswith("event:"):
+                    event = line[6:].strip()
+                elif line.startswith("data:"):
+                    data = json.loads(line[5:].strip() or "{}")
+                    if event == "error":
+                        raise GnaniError(f"text-to-speech failed: {data.get('message', data)}")
+                    if data.get("audio"):
+                        yield base64.b64decode(data["audio"])
+    except httpx.HTTPError as e:
+        raise GnaniError(f"could not reach Gnani text-to-speech: {e}")
 
 
 def speak(text, language=None):

@@ -12,6 +12,7 @@ import {
   initChat, clearChat, showWelcome, addUserMessage, addChatReply, addBuildCard, addErrorMessage,
   startPending, renderHistory,
 } from './chat.js';
+import { createLive } from './live.js';
 
 const API = 'http://localhost:8000';
 const DEFAULT_CIRCUIT = { components: [{ type: 'led', id: 'LED1', pin: 13 }] };
@@ -188,6 +189,7 @@ function setBusy(on) {
   busy = on;
   $('askBtn').disabled = on;
   $('micBtn').disabled = on;
+  updateOrb();
 }
 
 // mode: "auto" (the agent decides: answer or build), "build" (a suggestion chip), "chat".
@@ -228,6 +230,7 @@ async function askAgent(text, { mode = 'auto', via = 'text', language = '' } = {
         if (!chunk.startsWith('data: ')) continue;
         const event = JSON.parse(chunk.slice(6));
         if (event.type === 'step') pending.addStep(event);
+        else if (event.type === 'say') { pending.addSay(event.text); liveSay(event.text); }
         else if (event.type === 'result') { pending.remove(); showResult(event); }
         else if (event.type === 'error') throw new Error(event.message);
       }
@@ -241,6 +244,12 @@ async function askAgent(text, { mode = 'auto', via = 'text', language = '' } = {
   } finally {
     setBusy(false);
     $('request').focus();
+    // Something said in Live mode while the agent was busy: handle it now.
+    if (liveQueued) {
+      const next = liveQueued;
+      liveQueued = null;
+      askAgent(next.text, { via: 'voice', language: next.language });
+    }
   }
 }
 
@@ -251,7 +260,7 @@ function showResult(data) {
     agentStatus.className = 'status';
     agentStatus.textContent = `Answered in ${secs} s.`;
     if (data.lines) highlightLines(data.lines, undefined, { focus: false });
-    speakReply(data.spoken_summary);
+    speakOut(data.spoken_summary);
     return;
   }
 
@@ -272,7 +281,13 @@ function showResult(data) {
     agentStatus.textContent = `The agent could not get it working (${secs} s).`;
     stop();
   }
-  speakReply(data.spoken_summary);
+  speakOut(data.spoken_summary);
+}
+
+// The final reply: in Live mode through the streaming voice, otherwise one Timbre MP3 (if "Speak replies" is on).
+function speakOut(text) {
+  if (live.isOn()) liveSay(text);
+  else speakReply(text);
 }
 
 // ---------- voice: Prisma (speech-to-text) in, Timbre (text-to-speech) out ----------
@@ -351,6 +366,101 @@ async function speakReply(text) {
 
 function replaySpeech() {
   if (replyAudio) { replyAudio.currentTime = 0; replyAudio.play(); }
+}
+
+// ---------- Live mode: hands-free conversation (sim/live.js) ----------
+
+const LIVE_LABELS = {
+  connecting: 'Connecting...', listening: 'Listening. Just talk.', hearing: 'Hearing you...',
+  transcribing: 'Got it...', thinking: 'Working on it...', speaking: 'Speaking. Talk to interrupt.',
+  muted: 'Microphone muted', off: '',
+};
+let liveQueued = null;   // {text, language} said while the agent was busy
+let liveMuted = false;
+let liveDetail = '';
+
+const live = createLive(API, {
+  onState: (state, detail) => { liveDetail = detail || ''; updateOrb(); },
+  onLevel: (level) => $('liveOrb').style.setProperty('--level', Math.min(1, level * 3).toFixed(2)),
+  onTranscript: (text, language) => {
+    $('liveCaption').textContent = `You: ${text}`;
+    if (busy) {          // the agent is still working: do this next (the latest request wins)
+      liveQueued = { text, language };
+      $('liveCaption').textContent = `You: ${text} (next, after this one)`;
+      return;
+    }
+    askAgent(text, { via: 'voice', language });
+  },
+  onError: (message) => { $('liveCaption').textContent = message; },
+});
+
+// One word for the orb and the status line, from the microphone state, the agent and the voice.
+function updateOrb() {
+  if (!live.isOn()) return;
+  let state = live.state();
+  if (live.isSpeaking()) state = 'speaking';
+  else if (busy) state = 'thinking';
+  else if (liveMuted && state !== 'connecting') state = 'muted';
+  $('liveOrb').dataset.state = state;
+  $('liveState').textContent = liveDetail || LIVE_LABELS[state] || state;
+}
+
+function liveSay(text) {
+  if (!live.isOn() || !text) return;
+  $('liveCaption').textContent = text;
+  live.say(text).catch((err) => { $('liveCaption').textContent = `Voice reply failed: ${err.message}`; });
+  updateOrb();
+}
+
+async function startLive() {
+  replyAudio?.pause();
+  if (isRecording()) await stopRecording().catch(() => {});
+  $('livePanel').hidden = false;
+  $('liveBtn').hidden = true;
+  $('micBtn').hidden = true;
+  $('liveCaption').textContent = 'Say what the circuit should do, or ask a question.';
+  showEarphones();
+  await live.setEarphones(liveEarphones);
+  try {
+    await live.start();
+    updateOrb();
+  } catch (err) {
+    stopLive();
+    showHeard(err.message);
+  }
+}
+
+function stopLive() {
+  live.stop();
+  liveQueued = null;
+  liveMuted = false;
+  $('liveMuteBtn').classList.remove('on');
+  $('liveMuteBtn').textContent = 'Mute';
+  $('livePanel').hidden = true;
+  $('liveBtn').hidden = false;
+  $('micBtn').hidden = false;
+}
+
+// Earphones (remembered in this browser): echo cancellation off, so the agent can be interrupted reliably.
+let liveEarphones = false;
+try { liveEarphones = localStorage.getItem('gnani_earphones') === '1'; } catch {}
+function showEarphones() {
+  $('liveEarBtn').classList.toggle('on', liveEarphones);
+  $('liveEarBtn').setAttribute('aria-pressed', String(liveEarphones));
+}
+async function toggleEarphones() {
+  liveEarphones = !liveEarphones;
+  try { localStorage.setItem('gnani_earphones', liveEarphones ? '1' : '0'); } catch {}
+  showEarphones();
+  await live.setEarphones(liveEarphones);
+}
+
+function toggleLiveMute() {
+  liveMuted = !liveMuted;
+  live.setMuted(liveMuted);
+  $('liveMuteBtn').classList.toggle('on', liveMuted);
+  $('liveMuteBtn').textContent = liveMuted ? 'Unmute' : 'Mute';
+  updateOrb();
 }
 
 // ---------- session ----------
@@ -440,5 +550,9 @@ $('stopBtn').addEventListener('click', () => { stop(); statusLine.textContent = 
 $('newSessionBtn').addEventListener('click', newSession);
 $('soundToggle').addEventListener('change', (e) => setSound(e.target.checked));
 micBtn.addEventListener('click', toggleMic);
+$('liveBtn').addEventListener('click', startLive);
+$('liveEndBtn').addEventListener('click', stopLive);
+$('liveMuteBtn').addEventListener('click', toggleLiveMute);
+$('liveEarBtn').addEventListener('click', toggleEarphones);
 
 restoreSession();

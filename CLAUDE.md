@@ -134,7 +134,7 @@ D:\gnani\
     verify\verify.mjs             headless avr8js run (Phase 3), with its own package.json
     requirements.txt
   sim\                            Vite vanilla project
-    index.html   main.js   simulator.js   circuit.js (parts, wiring)   signals.js (graph)   voice.js (mic to WAV)   chat.js (chat panel)
+    index.html   main.js   simulator.js   circuit.js (parts, wiring)   signals.js (graph)   voice.js (mic to WAV)   chat.js (chat panel)   live.js (Live mode)
   arduino\libraries\Servo\        Servo 1.3.0 (LGPL-2.1), vendored
   tests\                          offline tests, live agent test, headless-Edge UI driver (see MEMORY.md)
   MEMORY.md                       handoff notes for the next session
@@ -250,6 +250,7 @@ function loadHex(source, target) {
 | Phase 4 | Done (Nov 8): `gnani.py`, `/transcribe`, `/speak`, browser WAV recorder (`sim/voice.js`), mic button, transcript line, spoken replies. Live-tested: Prisma exact on English clip (0.5-3.4 s), Timbre EN/HI/KN MP3s (2.6-5.4 s), full voice loop verified in headless Edge with a fake mic. Still to do by the user: real-mic test and listening to Hindi/Kannada quality (`out/voice-test/*.mp3`) |
 | Boards | Nov 9: board profiles (`backend/boards/*.json`) plus shared chip setups (`backend/boards/avr_chips.mjs`, used by the browser and the verifier). **Uno, Nano and Mega 2560 done.** Nano: A6/A7 analog-only. Mega: custom timers 0-5, ports A-L with correct interrupts, 16-channel ADC (A8-A15 via MUX5); all 15 PWM pins, servo (Timer5), tone (Timer2), A0/A8 and attachInterrupt measured in `tests/test_mega.py` (25/25). Next (later): Raspberry Pi Pico (rp2040js; bootrom not in the npm package; needs the arduino-pico core). ESP32/STM32: no open-source engine, Wokwi CI parked by the user |
 | Chat | Done (Nov 8): chat panel (user/agent bubbles, live steps in the reply, result card), `understand` node (build vs. question; answers from code, circuit, measurements and conversation in the user's language/script), line-by-line explanation (click a row to select the line), editor line numbers, session restore after reload (`GET /session/{id}`), LLM retry and Groq-to-Gemini backup on rate limits. Tested offline (fake LLM) and in headless Edge (`tests/ui_chat.json`, `tests/ui_timing_bug.json`) |
+| Live mode | Done (Nov 9): hands-free conversation like Gemini Live. "Go Live" keeps the mic open; Prisma **streaming** (WebSocket, relayed by the backend at `WS /live/stt`, server-side VAD) detects turns; replies are spoken with Timbre **streaming** (SSE, `POST /speak/stream`, raw PCM played as it arrives). The agent speaks a quick acknowledgement, a line when a measured test fails and it fixes itself, then the result. Talking over it interrupts it; an echo guard ignores its own voice; "🎧 Earphones" turns echo cancellation off for reliable interrupting. Tested with a fake microphone in headless Edge (`tests/ui_live.json`, `tests/ui_live_interrupt.json`) and `tests/test_live.mjs` |
 | Phase 5 | Next: polish and demo |
 
 Phase 4 notes (from docs.gnani.ai, Nov 8):
@@ -257,6 +258,14 @@ Phase 4 notes (from docs.gnani.ai, Nov 8):
 - Prisma REST: `POST /stt/v3`, multipart `audio_file` (wav/mp3/ogg/flac/aac/m4a, max 30 s; NOT webm, so the browser records PCM and encodes 16 kHz WAV), `model=prisma-v3.0`, `language_code=en-IN,hi-IN,kn-IN` (up to 4 hints), `format=codemix` (native script + English words in Latin). Response `transcript`, `detected_language_code`.
 - Timbre REST: `POST /api/v1/tts/inference` JSON `{text, model: timbre-v3.0, voice, language, speed, audio_config}`; v3.0 voices (Shivani, Avinash, Lakshmi, ...) speak all 10 languages. Languages `en-IN`, `hi-IN`, `kn-IN`, `hi-en`, `auto` (auto = by script, so Latin Hinglish would be read as English). We send Hindi/Hinglish in Devanagari and Kannada/Kanglish in Kannada script, numbers as words, language picked from the script.
 - Accounts may be limited to 1 active request at a time (429 RATE_LIMITED, no Retry-After).
+
+Live mode notes (docs.gnani.ai streaming pages, tested Nov 9):
+- Prisma streaming: `wss://api.vachana.ai/stt/v3/stream`, config as upgrade headers (`x-api-key-id`, `model`/`x-model`, `language_code`, `format`, `keyterms`, `x-sample-rate`, VAD `x-vad-threshold`, `x-min-silence-ms`, `x-idle-timeout-sec`). Audio: binary frames of exactly 1,024 bytes (512 samples, 16 kHz, 16-bit mono) every 32 ms. Messages: `connected`, `speech_start`, `processing`, `transcript` (`text`, `detected_language_code`), `error`. Control frame `{"type":"commit"}`. Session cap 15 min.
+- **The stream refuses a language list** ("exactly one locale is required"), unlike the docs, so we send `indic-auto`. `connected` also mentions undocumented `partials_enabled` (live partial captions): ask Gnani before using it.
+- Browsers cannot set WebSocket headers, so `main.py` relays (`WS /live/stt`, localhost origins only; the key never reaches the page).
+- Timbre streaming: `POST /api/v1/tts/sse`, same body as REST; with `container: raw`, `encoding: linear_pcm` each `chunk` event carries base64 PCM; `complete` ends it. First audio after about 1.5-1.9 s (REST: whole clip after about 3.4 s).
+- A Timbre call while a Prisma stream is open works (the "1 active request" limit did not block it). Timbre calls still go one at a time (the browser's playback queue).
+- Echo: with echo cancellation on, Chrome/Edge damped the user's voice to zero while the agent spoke (interrupting failed); with it off (earphones) interrupting worked. Hence the Earphones switch.
 
 Phase 3 notes:
 - Servo library 1.3.0 (LGPL-2.1) lives in `arduino/libraries/Servo`; `compiler.py` passes `--libraries` so nothing goes to Documents\Arduino.

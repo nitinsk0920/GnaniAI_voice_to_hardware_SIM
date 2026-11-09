@@ -14,6 +14,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }  /* "hidden" must win over display: flex/grid below */
 body {
   font-family: system-ui, sans-serif;
   margin: 20px;
@@ -47,9 +48,9 @@ h3 { margin: 14px 0 6px; font-size: 0.95rem; }
   display: flex; flex-direction: column;
   padding: 0; margin-bottom: 0; overflow: hidden;
 }
-.chat-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
-.chat-head h2 { margin: 0; }
-.status { font-weight: 600; font-size: 0.9rem; text-align: right; }
+.chat-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.chat-head h2 { margin: 0 0 2px; }
+.status { font-weight: 600; font-size: 0.85rem; }
 .status.good { color: var(--good); }
 .status.bad { color: var(--bad); }
 
@@ -122,6 +123,40 @@ details.how > summary { color: var(--muted); font-weight: normal; }
 .mic.busy { opacity: 0.6; cursor: wait; }
 @keyframes pulse-bg { 50% { background: #ff6b6b; } }
 .heard { margin-bottom: 8px; font-size: 0.9rem; color: #39424f; }
+
+/* ---------- Live mode ---------- */
+.live-btn { white-space: nowrap; border: 1px solid #c92a2a; color: #c92a2a; background: #fff; border-radius: 6px; font-weight: 600; }
+.live-btn:hover { background: #fff5f5; }
+.live-panel {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-bottom: 10px; padding: 12px;
+  border-radius: 12px; background: linear-gradient(135deg, #10203d, #1f3f78); color: #fff;
+}
+.live-text { flex: 1 1 160px; min-width: 0; }
+.live-state { font-weight: 700; font-size: 1rem; }
+.live-caption { font-size: 0.88rem; opacity: 0.85; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.live-buttons { display: flex; gap: 6px; }
+.live-buttons button { padding: 6px 12px; font-size: 0.9rem; }
+.live-buttons .secondary { background: rgba(255,255,255,0.12); color: #fff; border: 1px solid rgba(255,255,255,0.35); }
+.live-buttons .secondary.on { background: #fff; color: #10203d; }
+.live-buttons .end { background: #e03131; color: #fff; border: none; border-radius: 4px; }
+
+/* The orb: its look follows the conversation state; --level (0..1) is the microphone loudness. */
+.orb { --level: 0; position: relative; flex: 0 0 56px; height: 56px; display: grid; place-items: center; }
+.orb::before {   /* outer glow, grows with your voice */
+  content: ""; position: absolute; inset: 0; border-radius: 50%;
+  background: radial-gradient(circle, rgba(116,192,252,0.55), rgba(116,192,252,0) 70%);
+  transform: scale(calc(1 + var(--level) * 0.9)); transition: transform 0.08s linear;
+}
+.orb .core { width: 34px; height: 34px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #a5d8ff, #1c7ed6); position: relative; }
+.orb[data-state="hearing"] .core { background: radial-gradient(circle at 35% 35%, #d3f9d8, #2f9e44); }
+.orb[data-state="transcribing"] .core,
+.orb[data-state="thinking"] .core { background: radial-gradient(circle at 35% 35%, #fff3bf, #f08c00); animation: orb-think 1s ease-in-out infinite; }
+.orb[data-state="speaking"] .core { background: radial-gradient(circle at 35% 35%, #e5dbff, #7048e8); animation: orb-speak 0.6s ease-in-out infinite alternate; }
+.orb[data-state="connecting"] .core,
+.orb[data-state="muted"] .core { background: #868e96; }
+@keyframes orb-think { 50% { transform: scale(0.82); opacity: 0.75; } }
+@keyframes orb-speak { from { transform: scale(0.9); } to { transform: scale(1.12); } }
+.msg .say { font-style: italic; color: #4c3a99; margin: 4px 0 0; font-size: 0.9rem; }
 .dev { display: block; margin-top: 8px; font-size: 0.8rem; color: var(--muted); }
 
 /* ---------- circuit: parts on top, the board below, wires drawn in an SVG layer over both ---------- */

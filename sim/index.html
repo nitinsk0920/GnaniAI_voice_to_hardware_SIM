@@ -61,11 +61,26 @@
 
       <aside class="card chat" aria-label="Chat with the agent">
         <div class="chat-head">
-          <h2>Chat with the agent</h2>
-          <div id="agentStatus" class="status">Ready.</div>
+          <div>
+            <h2>Chat with the agent</h2>
+            <div id="agentStatus" class="status">Ready.</div>
+          </div>
+          <button id="liveBtn" type="button" class="live-btn" title="Hands-free conversation: just talk, the agent answers out loud">● Go Live</button>
         </div>
         <div id="messages" class="messages" aria-live="polite"></div>
         <div class="composer">
+          <div id="livePanel" class="live-panel" hidden>
+            <div id="liveOrb" class="orb" data-state="connecting" aria-hidden="true"><span class="core"></span></div>
+            <div class="live-text">
+              <div id="liveState" class="live-state">Connecting...</div>
+              <div id="liveCaption" class="live-caption"></div>
+            </div>
+            <div class="live-buttons">
+              <button id="liveEarBtn" type="button" class="secondary" title="Using earphones? Turn this on: interrupting the agent works much better. Leave it off with laptop speakers.">🎧 Earphones</button>
+              <button id="liveMuteBtn" type="button" class="secondary" title="Pause the microphone">Mute</button>
+              <button id="liveEndBtn" type="button" class="end">End</button>
+            </div>
+          </div>
           <div id="heard" class="heard" hidden></div>
           <form id="askForm">
             <button id="micBtn" type="button" class="mic" title="Click to speak, click again to send">🎤 Speak</button>
