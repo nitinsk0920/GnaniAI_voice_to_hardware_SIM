@@ -17,8 +17,11 @@ import {
   startPending, renderHistory,
 } from './chat.js';
 import { createLive } from './live.js';
+import { getKeys, saveKeys, forgetKeys, isRemembered, keyHeaders, hasLlmKey, gnaniKey } from './keys.js';
 
-const API = 'http://localhost:8000';
+// Backend address: in development (npm run dev) uvicorn on port 8000; a built page served by the
+// backend itself (deployment) uses its own address. VITE_API_URL overrides both.
+const API = import.meta.env.VITE_API_URL ?? (import.meta.env.DEV ? 'http://localhost:8000' : '');
 const DEFAULT_CIRCUIT = { components: [{ type: 'led', id: 'LED1', pin: 13 }] };
 const DEFAULT_BODY = `void setup() {
   pinMode(LED1_PIN, OUTPUT);
@@ -200,6 +203,7 @@ function setBusy(on) {
 async function askAgent(text, { mode = 'auto', via = 'text', language = '' } = {}) {
   text = (text || '').trim();
   if (!text || busy) return;
+  if (!llmReady()) return openKeys('Add a Groq or Gemini key to chat with the agent.');
   unlockAudio();
   setBusy(true);
   addUserMessage(text, { via, language });
@@ -211,7 +215,7 @@ async function askAgent(text, { mode = 'auto', via = 'text', language = '' } = {
   try {
     const res = await fetch(`${API}/run`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...keyHeaders() },
       body: JSON.stringify({
         session_id: sessionId, text, circuit: getCircuit(), board: getBoardId(),
         debug_break: $('debugBreak').value, mode, via,
@@ -307,6 +311,7 @@ function showHeard(text) {
 async function toggleMic() {
   unlockAudio();
   if (isRecording()) return finishRecording();
+  if (!voiceReady()) return openKeys('Add your Gnani key to talk to the agent.');
   try {
     await startRecording(finishRecording); // auto-stops before Prisma's 30 s limit
     micBtn.classList.add('recording');
@@ -328,7 +333,9 @@ async function finishRecording() {
     const { wav, seconds } = await stopRecording();
     if (seconds < 0.4) return showHeard('That was too short. Click Speak, say your request, then click Stop.');
     showHeard('Transcribing with Gnani Prisma...');
-    const res = await fetch(`${API}/transcribe`, { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: wav });
+    const res = await fetch(`${API}/transcribe`, {
+      method: 'POST', headers: { 'Content-Type': 'audio/wav', ...keyHeaders() }, body: wav,
+    });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
     if (!data.transcript) return showHeard("I didn't catch anything. Please try again.");
@@ -346,11 +353,11 @@ async function finishRecording() {
 
 // Read the agent's short reply aloud (never the code). One Timbre call per reply.
 async function speakReply(text) {
-  if (!text || !$('speakToggle').checked) return;
+  if (!text || !$('speakToggle').checked || !voiceReady()) return; // no Gnani key: the reply is shown, not spoken
   try {
     const res = await fetch(`${API}/speak`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...keyHeaders() },
       body: JSON.stringify({ text }),
     });
     if (!res.ok) {
@@ -383,8 +390,18 @@ let liveQueued = null;   // {text, language} said while the agent was busy
 let liveMuted = false;
 let liveDetail = '';
 
+let liveError = '';      // the last Live error, shown if Live mode stops by itself
+
 const live = createLive(API, {
-  onState: (state, detail) => { liveDetail = detail || ''; updateOrb(); },
+  onState: (state, detail) => {
+    liveDetail = detail || '';
+    if (state === 'off') {   // stopped, maybe by itself (connection refused or lost): close the panel
+      if (!$('livePanel').hidden) closeLivePanel();
+      if (liveError) showHeard(liveError);
+      return;
+    }
+    updateOrb();
+  },
   onLevel: (level) => $('liveOrb').style.setProperty('--level', Math.min(1, level * 3).toFixed(2)),
   onTranscript: (text, language) => {
     $('liveCaption').textContent = `You: ${text}`;
@@ -395,7 +412,7 @@ const live = createLive(API, {
     }
     askAgent(text, { via: 'voice', language });
   },
-  onError: (message) => { $('liveCaption').textContent = message; },
+  onError: (message) => { liveError = message; $('liveCaption').textContent = message; },
 });
 
 // One word for the orb and the status line, from the microphone state, the agent and the voice.
@@ -417,6 +434,9 @@ function liveSay(text) {
 }
 
 async function startLive() {
+  if (!voiceReady()) return openKeys('Add your Gnani key to use Live mode.');
+  liveError = '';
+  showHeard('');
   replyAudio?.pause();
   if (isRecording()) await stopRecording().catch(() => {});
   $('livePanel').hidden = false;
@@ -435,7 +455,12 @@ async function startLive() {
 }
 
 function stopLive() {
+  liveError = '';          // ended on purpose: nothing to report
   live.stop();
+  closeLivePanel();
+}
+
+function closeLivePanel() {
   liveQueued = null;
   liveMuted = false;
   $('liveMuteBtn').classList.remove('on');
@@ -465,6 +490,66 @@ function toggleLiveMute() {
   $('liveMuteBtn').classList.toggle('on', liveMuted);
   $('liveMuteBtn').textContent = liveMuted ? 'Unmute' : 'Mute';
   updateOrb();
+}
+
+// ---------- API keys: bring your own key (sim/keys.js) ----------
+// A public server asks every visitor for their own keys (user_keys_required). Locally the server's
+// .env keys are used for any key left empty.
+
+let server = null;   // GET /health, once the backend answers
+const serverHas = (what) => !!server && !server.user_keys_required && server[what];
+// Unknown server (not reached yet): let the request go; its error explains the problem.
+const llmReady = () => hasLlmKey() || !server || serverHas('llm_key_set');
+const voiceReady = () => !!gnaniKey() || !server || serverHas('gnani_key_set');
+const KEY_FIELDS = { groq: 'keyGroq', gemini: 'keyGemini', gnani: 'keyGnani' };
+
+function updateKeysButton() {
+  const btn = $('keysBtn');
+  const missing = server && (!llmReady() || !voiceReady());
+  btn.classList.toggle('needed', !!missing);
+  btn.classList.toggle('set', !missing && Object.keys(getKeys()).length > 0);
+  btn.title = missing ? 'Add your API keys to use the agent and voice'
+    : 'Your API keys: kept in this browser only';
+}
+
+function openKeys(reason = '') {
+  const saved = getKeys();
+  for (const [name, id] of Object.entries(KEY_FIELDS)) $(id).value = saved[name] || '';
+  $('keyRemember').checked = isRemembered();
+  $('keyShow').checked = false;
+  showKeyText(false);
+  $('keysReason').textContent = reason;
+  $('keysReason').hidden = !reason;
+  $('keysServerNote').hidden = !(server && !server.user_keys_required && (server.llm_key_set || server.gnani_key_set));
+  $('keysDialog').showModal();
+}
+
+function showKeyText(show) {
+  for (const id of Object.values(KEY_FIELDS)) $(id).type = show ? 'text' : 'password';
+}
+
+function saveKeysFromDialog() {
+  const next = {};
+  for (const [name, id] of Object.entries(KEY_FIELDS)) next[name] = $(id).value;
+  saveKeys(next, $('keyRemember').checked);
+  updateKeysButton();
+  agentStatus.className = 'status';
+  agentStatus.textContent = llmReady() ? 'Keys saved. Ready.' : 'Add a Groq or Gemini key to chat with the agent.';
+}
+
+async function checkServer() {
+  try {
+    const res = await fetch(`${API}/health`);
+    if (!res.ok) return;
+    server = await res.json();
+  } catch {
+    return; // backend not running yet
+  }
+  updateKeysButton();
+  if (server.user_keys_required && !hasLlmKey()) {
+    agentStatus.textContent = 'Add your API keys to start.';
+    openKeys('This app runs on your own API keys. Add them once to start.');
+  }
 }
 
 // ---------- session ----------
@@ -558,5 +643,17 @@ $('liveBtn').addEventListener('click', startLive);
 $('liveEndBtn').addEventListener('click', stopLive);
 $('liveMuteBtn').addEventListener('click', toggleLiveMute);
 $('liveEarBtn').addEventListener('click', toggleEarphones);
+$('keysBtn').addEventListener('click', () => openKeys());
+$('keysForm').addEventListener('submit', saveKeysFromDialog);   // method="dialog": the dialog closes itself
+$('keysCancel').addEventListener('click', () => $('keysDialog').close());
+$('keysForget').addEventListener('click', () => {
+  forgetKeys();
+  updateKeysButton();
+  $('keysDialog').close();
+  agentStatus.className = 'status';
+  agentStatus.textContent = 'Keys removed from this browser.';
+});
+$('keyShow').addEventListener('change', (e) => showKeyText(e.target.checked));
+checkServer();
 
 restoreSession();

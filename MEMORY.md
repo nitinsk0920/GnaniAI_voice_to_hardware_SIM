@@ -1,7 +1,7 @@
 # MEMORY.md: handoff notes for the next session
 
 Last updated: 2026-11-08 (chat interface added, on the new laptop at `C:\GnaniAI_voice_to_hardware_SIM`).
-**Read order for a new session:** `CLAUDE.md` (rules, plan, status table, lessons) → this file (where we are, what's next) → `WORKFLOW.md` (agent design, only when changing the agent).
+**Read order for a new session:** `PROJECT_GUIDE.md` (rules, plan, status table, lessons) → this file (where we are, what's next) → `WORKFLOW.md` (agent design, only when changing the agent).
 
 ## About the user
 - Strong in Python/FastAPI, a beginner with the simulator and frontend parts: explain those in plain language.
@@ -11,7 +11,7 @@ Last updated: 2026-11-08 (chat interface added, on the new laptop at `C:\GnaniAI
 - Wants each phase finished with exact run commands and what they should see.
 
 ## Where we are (all built and tested)
-- **Phases 1 to 4 are done** (details in the CLAUDE.md status table).
+- **Phases 1 to 4 are done** (details in the PROJECT_GUIDE.md status table).
 - Flow: voice (Prisma) or text → LangGraph agent (plan → preflight → compile → headless verify → fix loop → explain) → browser runs the hex live → Timbre speaks the summary.
 - Parts: LED, push button, servo, buzzer, potentiometer. Each is simulated, interactive on screen, and measured by `backend/evaluator.py`.
 - UI: drawn wiring, pin dropdowns ("~" = PWM), live signal graph, wiring-change notice, code editor with line numbers.
@@ -82,12 +82,13 @@ wokwi-elements has pictures for: 7segment, analog-joystick, biaxial-stepper, big
    - change `API` in `sim/main.js` to `/api`;
    - the user accepts the certificate warning on the phone and allows Node through the Windows firewall (private networks).
 6. **Not built:** 7-segment display (optional), LCD and DC motor (too big for the deadline). Phone mode as in 5.
-7. **After the demo:** BYOK and deployment (CLAUDE.md section 9). Decided with the user on Nov 9:
+7. **BYOK: done (Nov 9)**, see PROJECT_GUIDE.md section 9. Next: deployment. Decided with the user on Nov 9:
    - **Host: Hugging Face Spaces (Docker, free CPU tier: 2 vCPU, 16 GB RAM, HTTPS, WebSockets)**, not Render free (0.1 CPU / 512 MB would make compile + simulate slow enough to hit the 90 s cap; sleeps after 15 min).
    - **BYOK for both keys:** visitors always bring their own **Gnani key** (Prisma/Timbre) **and their own LLM key** (Groq or Gemini); the deployed server uses no keys of ours. Keys live only in the browser tab, go with each request (headers; the Live WebSocket gets the Gnani key in its first message, never in the URL) and are never stored or logged by the backend. Add a per-IP rate limit. SQLite sessions are lost on restart (fine).
-   - **Order:** record and post the demo video with the local app first, then BYOK + Dockerfile + deploy, then add a "Try it" link to the post.
+   - **Order (user, Nov 9):** BYOK (done), then Dockerfile + deploy, then the README with a one-page solution pitch (the submission form asks for a project link with a pitch of at most 1 page). The repo must be public, or the link must point to something public, for the judges to open it.
+   - BYOK details: `backend/keys.py` (context variable per request; `keys.iterate` runs each step of the streamed agent inside it, LangGraph's worker threads copy it), `sim/keys.js`, the 🔑 API keys dialog in `index.html`. A rejected key (401/403) moves to the backup LLM provider if the visitor gave both keys. Live mode stops instead of reconnecting when the connection is refused (bad or missing Gnani key) and closes its panel with the reason.
 
-## Known behaviours and gotchas (more in CLAUDE.md "notes")
+## Known behaviours and gotchas (more in PROJECT_GUIDE.md "notes")
 - LLM output varies between runs. Preflight guards against:
   - impossible thresholds;
   - check windows that contain a button press;
@@ -106,6 +107,8 @@ wokwi-elements has pictures for: 7segment, analog-joystick, biaxial-stepper, big
 - `.venv\Scripts\python tests\test_verify.py`: 12 sketches (10 Uno, half deliberately wrong, plus 2 Nano) through compile, headless simulation and the evaluator. No LLM, no servers. About 25 s.
 - `.venv\Scripts\python tests\test_mega.py`: Mega 2560 measured checks: 15 PWM pins, delay, servo, tone, port A button, A0/A8, attachInterrupt (25 checks). No LLM, no servers. About 30 s.
 - `node tests\test_live.mjs`: the Live echo guard (English, Hindi, Kannada). No servers.
+- BYOK in the browser with fake keys (no credits; Groq and Gnani just refuse them): a backend with `REQUIRE_USER_KEYS=1` on another port and Vite pointed at it, e.g. `cd backend; $env:REQUIRE_USER_KEYS=1; ..\.venv\Scripts\python -m uvicorn main:app --port 8010` and `cd sim; $env:VITE_API_URL="http://localhost:8010"; npx vite --port 5180`, then `$env:APP_URL="http://localhost:5180/"; $env:EXTRA_ARGS="--use-fake-ui-for-media-stream|--use-fake-device-for-media-stream"; node tests\drive.mjs tests\ui_byok.json out\ui-byok`.
+- `.venv\Scripts\python tests\check_byok.py <server url>`: the keys from `.env` sent as a visitor's (real: one build, one Timbre line, one Prisma connect). Use it on the deployed site too.
 - Live scenarios with a fake microphone (Gnani credits: 1 Prisma stream + 2-4 Timbre lines each). First `.venv\Scripts\python tests\make_fake_mic.py` (builds `out\live-probe\fake_mic*.wav`; 2 short Timbre calls the first time, then cached), then:
   `$env:EXTRA_ARGS = "--use-fake-ui-for-media-stream|--use-fake-device-for-media-stream|--use-file-for-fake-audio-capture=<full path>\fake_mic.wav%noloop"; node tests\drive.mjs tests\ui_live.json out\ui-live`
   (`ui_live_interrupt.json` uses `fake_mic_interrupt.wav`: a second question at 9.5 s, while the agent is talking).
@@ -115,6 +118,7 @@ wokwi-elements has pictures for: 7segment, analog-joystick, biaxial-stepper, big
 
 ## File map
 - `backend/main.py`: routes `/health`, `/compile`, `/run` (SSE, one chat message), `/session/{id}`, `/transcribe`, `/speak`, `/speak/stream` (Live), `WS /live/stt` (Live).
+- `backend/keys.py` and `sim/keys.js`: the visitor's own API keys (BYOK).
 - `sim/live.js`: Live mode (see above).
 - `backend/boards/*.json`: board profiles. `backend/graph.py`: `BOARDS`, `board_facts()`, LangGraph nodes (`understand` first), prompts (`CODE_RULES`, `CHECKS_DOC`, `PLAN_SYSTEM`, `FIX_SYSTEM`, `FIX_CHECKS_SYSTEM`, `EXPLAIN_SYSTEM`, `CONVERSE_SYSTEM`, shared `SPOKEN_RULES`/`WRITTEN_LANGUAGE`), preflight, sim config, `session_snapshot`.
 - `sim/chat.js`: the chat panel (bubbles, live steps, build card, line-by-line table, safe text formatting: model text is never inserted as HTML).

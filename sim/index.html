@@ -16,9 +16,44 @@
       <div class="header-actions">
         <label class="toggle" title="Read the agent's short replies aloud with Gnani Timbre (uses credits)"><input id="speakToggle" type="checkbox" checked /> Speak replies</label>
         <label class="toggle" title="Buzzer sound in the simulator"><input id="soundToggle" type="checkbox" checked /> Buzzer sound</label>
+        <button id="keysBtn" type="button" class="secondary keys-btn">🔑 API keys</button>
         <button id="newSessionBtn" class="secondary">New session</button>
       </div>
     </header>
+
+    <dialog id="keysDialog" class="keys-dialog" aria-labelledby="keysTitle">
+      <form id="keysForm" method="dialog">
+        <h2 id="keysTitle">Your API keys</h2>
+        <p id="keysReason" class="notice" hidden></p>
+        <p class="caption">Keys stay in this browser. They are sent only with your own requests, and the server uses them for that request without storing or logging them.</p>
+        <label class="key-field">
+          <span>Groq API key <a href="https://console.groq.com/keys" target="_blank" rel="noopener">get one free</a></span>
+          <input id="keyGroq" type="password" autocomplete="off" spellcheck="false" placeholder="gsk_..." />
+          <small>Runs the agent (writes, fixes and explains the code).</small>
+        </label>
+        <label class="key-field">
+          <span>Gemini API key <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">get one free</a></span>
+          <input id="keyGemini" type="password" autocomplete="off" spellcheck="false" placeholder="optional" />
+          <small>Optional: used instead of Groq, or as a backup when Groq is busy. One of the two is needed.</small>
+        </label>
+        <label class="key-field">
+          <span>Gnani API key <a href="https://app.gnani.ai" target="_blank" rel="noopener">app.gnani.ai</a></span>
+          <input id="keyGnani" type="password" autocomplete="off" spellcheck="false" placeholder="for voice" />
+          <small>Voice: speech-to-text (Prisma), spoken replies (Timbre) and Live mode.</small>
+        </label>
+        <p id="keysServerNote" class="caption" hidden>This server also has keys of its own (.env): fields left empty use those.</p>
+        <div class="key-options">
+          <label class="toggle"><input id="keyShow" type="checkbox" /> Show keys</label>
+          <label class="toggle" title="Otherwise the keys are forgotten when you close this tab"><input id="keyRemember" type="checkbox" /> Remember on this device</label>
+        </div>
+        <div class="key-actions">
+          <button id="keysForget" type="button" class="secondary danger">Forget keys</button>
+          <span class="spacer"></span>
+          <button id="keysCancel" type="button" class="secondary">Cancel</button>
+          <button type="submit">Save</button>
+        </div>
+      </form>
+    </dialog>
 
     <div class="workspace">
       <div class="bench">

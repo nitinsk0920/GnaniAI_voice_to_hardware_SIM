@@ -1,4 +1,4 @@
-// Drive headless Edge over the DevTools protocol: run a list of steps on http://localhost:5173,
+// Drive headless Edge over the DevTools protocol: run a list of steps on http://localhost:5173 (or APP_URL),
 // print console errors, save screenshots.
 // usage (backend on :8000 and Vite on :5173 running): node tests/drive.mjs tests/ui_timing_bug.json out/ui
 // Fake microphone: set EXTRA_ARGS="--use-fake-ui-for-media-stream|--use-fake-device-for-media-stream|--use-file-for-fake-audio-capture=C:\path\clip.wav"
@@ -47,7 +47,7 @@ const evaluate = async (expr) => {
 
 await send('Runtime.enable'); await send('Log.enable'); await send('Page.enable');
 await send('Emulation.setDeviceMetricsOverride', { width: 1400, height: 1400, deviceScaleFactor: 1, mobile: false });
-await send('Page.navigate', { url: 'http://localhost:5173/' });
+await send('Page.navigate', { url: process.env.APP_URL || 'http://localhost:5173/' });
 await sleep(2500);
 
 for (const s of steps) {

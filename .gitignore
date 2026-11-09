@@ -7,3 +7,6 @@ gnani.db-*
 __pycache__/
 dist/
 docs/
+
+# local pointer for Claude Code sessions (the real guide is PROJECT_GUIDE.md)
+CLAUDE.md

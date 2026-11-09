@@ -1,6 +1,6 @@
 # WORKFLOW.md: the agent design for the Voice-to-Hardware Simulator
 
-Last updated: 2026-11-08 (chat added). Companion to `CLAUDE.md`. CLAUDE.md says **what, why and in what order**; this file says **exactly how the agent works**. Build it phase by phase as laid out in CLAUDE.md section 8. Phase 1 needs none of this file.
+Last updated: 2026-11-08 (chat added). Companion to `PROJECT_GUIDE.md`. PROJECT_GUIDE.md says **what, why and in what order**; this file says **exactly how the agent works**. Build it phase by phase as laid out in PROJECT_GUIDE.md section 8. Phase 1 needs none of this file.
 
 ## 1. Decisions (settled)
 
@@ -13,7 +13,7 @@ Last updated: 2026-11-08 (chat added). Companion to `CLAUDE.md`. CLAUDE.md says 
 | Explain the code | **Yes**, a dedicated `explain` step, **line by line**. | The user gets code plus a short note on every meaningful line. |
 | Chat | **Yes**, an `understand` step before planning. | Questions ("why millis?", "explain line 7") are answered from the code, circuit and measurements without rebuilding; change requests go to the build loop. |
 | Pin numbers | **Owned by the circuit spec and backend**, never invented by the LLM. | Keeps code and circuit in sync (section 5). |
-| LLM provider | **Behind `llm.py`.** Evon if the Gnani platform serves it, otherwise a swappable hosted LLM. | Evon's API availability is unconfirmed (CLAUDE.md section 2). |
+| LLM provider | **Behind `llm.py`.** Evon if the Gnani platform serves it, otherwise a swappable hosted LLM. | Evon's API availability is unconfirmed (PROJECT_GUIDE.md section 2). |
 
 ## 2. The principle that makes this more than a prompt
 
@@ -219,8 +219,10 @@ Start with the first three; add the rest in order if time allows. All times in m
 | `GET /session/{id}` | `{messages, board, circuit, full_code, hex}` so a reloaded page continues the session. | chat |
 | `POST /transcribe` | Audio in, text out (Prisma). | 4 |
 | `POST /speak` | Text in, audio out (Timbre). | 4 |
-| `WS /live/stt` | Live mode: relays 1,024-byte PCM frames to Prisma streaming and its JSON messages back (adds the key; localhost origins only). | Live |
+| `WS /live/stt` | Live mode: first message `{"type":"auth","gnani_key"}`, then relays 1,024-byte PCM frames to Prisma streaming and its JSON messages back (adds the key upstream; localhost or same-host origins only). | Live |
 | `POST /speak/stream` | Live mode: Timbre streaming; raw 16-bit PCM body, rate in `X-Sample-Rate`. | Live |
+
+API keys (BYOK): `/run`, `/transcribe`, `/speak` and `/speak/stream` read the visitor's keys from the headers `X-Groq-Key`, `X-Gemini-Key`, `X-Gnani-Key` (`backend/keys.py`); a missing key gives HTTP 401 with a message that points to the 🔑 API keys button. `GET /health` reports `user_keys_required`, `llm_key_set`, `gnani_key_set`.
 
 `POST /run` also streams `{"type": "say", "node", "text"}` events: the `understand` acknowledgement of a build request (`ack`) and the `fix` line after a measured or compile failure (`say` in the fix reply; never for check-only rewrites). Live mode speaks them at once; the chat shows them in the working bubble.
 
@@ -235,8 +237,8 @@ Start with the first three; add the rest in order if time allows. All times in m
 ## 12. Safety notes
 - `subprocess` calls use argument lists and timeouts; temp directories per request; size limits on code.
 - LLM output never reaches a shell. Library installs come from the allowlist only.
-- API keys live in `.env` (loaded in the backend) and are never logged or committed. CORS is limited to localhost for now.
+- API keys come from the visitor (per request, BYOK) or `.env` locally, and are never logged, stored or committed. They never enter the graph state or the LangGraph config (whose string values end up in the checkpoint metadata). With `REQUIRE_USER_KEYS=1` the server's own keys are never used. CORS is limited to localhost; the deployed page is served by the backend itself (same origin).
 
 ## 13. Build order
-This matches CLAUDE.md section 8: Phase 1 (compile and LED, no agent), Phase 2 (sections 4 to 7.4 plus 7.7, 7.8 and 7.10, text only), Phase 3 (7.6, 7.9, section 8, streaming, circuit panel, graph), Phase 4 (voice, voice rewiring, `install_lib` only if time is left), Phase 5 (polish, demo, post).
+This matches PROJECT_GUIDE.md section 8: Phase 1 (compile and LED, no agent), Phase 2 (sections 4 to 7.4 plus 7.7, 7.8 and 7.10, text only), Phase 3 (7.6, 7.9, section 8, streaming, circuit panel, graph), Phase 4 (voice, voice rewiring, `install_lib` only if time is left), Phase 5 (polish, demo, post).
 If behind on Nov 9 morning, cut: `install_lib`, `reacts_to_input`, buzzer, history UI, voice rewiring. **Never cut:** the verify loop, real Prisma and Timbre use, the explanation, and the demo video.

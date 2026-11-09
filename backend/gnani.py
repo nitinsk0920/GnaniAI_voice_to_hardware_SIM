@@ -1,12 +1,13 @@
 """Gnani voice APIs: Prisma (speech-to-text) and Timbre (text-to-speech).
 
-Every Gnani call goes through this file (later, BYOK: pass a per-request key instead of .env).
+Every Gnani call goes through this file. Each function takes the caller's key (BYOK: the visitor's
+own key, sent with the request); without one, keys.get falls back to .env unless REQUIRE_USER_KEYS is set.
 Docs: https://docs.gnani.ai
   STT REST:      POST /stt/v3                (one clip, max 30 s; the mic button)
   STT streaming: WSS  /stt/v3/stream         (Live mode; the server detects start/end of speech)
   TTS REST:      POST /api/v1/tts/inference  (one MP3)
   TTS streaming: POST /api/v1/tts/sse        (Live mode; base64 audio chunks as they are generated)
-.env: GNANI_API_KEY (required), GNANI_TTS_VOICE (optional, default Shivani)
+.env: GNANI_API_KEY (used when the request brings no key), GNANI_TTS_VOICE (optional, default Shivani)
 """
 import base64
 import json
@@ -14,6 +15,8 @@ import os
 import re
 
 import httpx
+
+import keys
 
 BASE_URL = "https://api.vachana.ai"
 STT_MODEL = "prisma-v3.0"
@@ -30,10 +33,10 @@ class GnaniError(Exception):
     pass
 
 
-def _key():
-    key = os.getenv("GNANI_API_KEY")
+def _key(key=None):
+    key = keys.get("gnani", key)
     if not key:
-        raise GnaniError("GNANI_API_KEY is missing from .env")
+        raise GnaniError(keys.missing_message("gnani"))
     return key
 
 
@@ -53,13 +56,13 @@ def _error_text(r):
     return f"HTTP {r.status_code}: {str(body)[:200]}"
 
 
-def transcribe(audio_bytes, filename="speech.wav"):
+def transcribe(audio_bytes, filename="speech.wav", key=None):
     """Prisma REST (max 30 s). Returns {"transcript", "language"}.
     format=codemix: Kannada/Hindi in their own script, English words (LED, servo) stay in Latin letters."""
     try:
         r = httpx.post(
             f"{BASE_URL}/stt/v3",
-            headers={"X-API-Key-ID": _key()},
+            headers={"X-API-Key-ID": _key(key)},
             data={"model": STT_MODEL, "language_code": STT_LANGUAGES, "format": "codemix",
                   "keyterms": STT_KEYTERMS},
             files={"audio_file": (filename, audio_bytes, "audio/wav")},
@@ -87,14 +90,14 @@ def language_of(text):
     return "en-IN"
 
 
-def stt_stream_headers():
+def stt_stream_headers(key=None):
     """WebSocket upgrade headers for Prisma streaming. Tested Nov 9:
     - the stream refuses a list of languages ("exactly one locale is required"), so indic-auto lets
       Prisma v3.0 pick English, Hindi or Kannada per utterance (it returns detected_language_code);
     - VAD from the docs' "clean web microphone" preset: speech threshold 0.5, 700 ms of silence ends a turn;
     - idle timeout raised to 15 min (the session cap), so thinking pauses do not close it."""
     return {
-        "x-api-key-id": _key(),
+        "x-api-key-id": _key(key),
         "model": STT_MODEL,
         "x-model": STT_MODEL,           # older spelling, also accepted
         "language_code": "indic-auto",
@@ -107,7 +110,7 @@ def stt_stream_headers():
     }
 
 
-def speak_stream(text, language=None, rate=TTS_STREAM_RATE):
+def speak_stream(text, language=None, rate=TTS_STREAM_RATE, key=None):
     """Timbre SSE. Yields raw 16-bit mono PCM chunks (`rate` Hz) while the speech is generated,
     so playback can start after about 1.5 s instead of waiting for the whole clip."""
     text = (text or "").strip()
@@ -124,7 +127,7 @@ def speak_stream(text, language=None, rate=TTS_STREAM_RATE):
     }
     try:
         with httpx.stream("POST", f"{BASE_URL}/api/v1/tts/sse", json=body, timeout=TIMEOUT_S,
-                          headers={"X-API-Key-ID": _key(), "Content-Type": "application/json"}) as r:
+                          headers={"X-API-Key-ID": _key(key), "Content-Type": "application/json"}) as r:
             if r.status_code != 200:
                 r.read()
                 raise GnaniError(f"text-to-speech failed: {_error_text(r)}")
@@ -142,7 +145,7 @@ def speak_stream(text, language=None, rate=TTS_STREAM_RATE):
         raise GnaniError(f"could not reach Gnani text-to-speech: {e}")
 
 
-def speak(text, language=None):
+def speak(text, language=None, key=None):
     """Timbre REST. Returns (audio bytes, content type). MP3 keeps the download small."""
     text = (text or "").strip()
     if not text:
@@ -150,7 +153,7 @@ def speak(text, language=None):
     try:
         r = httpx.post(
             f"{BASE_URL}/api/v1/tts/inference",
-            headers={"X-API-Key-ID": _key(), "Content-Type": "application/json"},
+            headers={"X-API-Key-ID": _key(key), "Content-Type": "application/json"},
             json={
                 "text": text[:600],
                 "model": TTS_MODEL,

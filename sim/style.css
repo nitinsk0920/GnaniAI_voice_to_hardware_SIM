@@ -106,7 +106,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 button:disabled { opacity: 0.55; cursor: wait; }
 button.secondary { background: var(--surface-2); color: var(--text); border-color: var(--border-strong); }
 button.secondary:hover { background: var(--surface-3); }
-input[type="text"], select {
+input[type="text"], input[type="password"], select {
   font: 0.95rem var(--font-body);
   color: var(--text);
   background: var(--surface-2);
@@ -115,6 +115,32 @@ input[type="text"], select {
 }
 select { padding: 6px 8px; cursor: pointer; }
 input[type="text"]::placeholder { color: var(--muted); }
+
+/* ---------- API keys (BYOK) ---------- */
+.keys-btn.needed { border-color: var(--fix); color: var(--fix); background: var(--fix-soft); }
+.keys-btn.set { border-color: rgba(63, 207, 142, 0.45); }
+.keys-dialog {
+  width: min(520px, calc(100vw - 32px));
+  padding: 22px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.keys-dialog::backdrop { background: rgba(5, 8, 15, 0.7); backdrop-filter: blur(2px); }
+.keys-dialog .notice { margin: 0 0 10px; }
+.keys-dialog .caption { margin: 0 0 14px; line-height: 1.45; }
+.key-field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 14px; }
+.key-field span { font-weight: 600; font-size: 0.92rem; display: flex; justify-content: space-between; gap: 8px; }
+.key-field span a { font-weight: 500; font-size: 0.85rem; }
+.key-field input { padding: 8px 10px; font-family: var(--font-code); font-size: 0.85rem; }
+.key-field small { color: var(--muted); font-size: 0.8rem; }
+.key-options { display: flex; gap: 18px; flex-wrap: wrap; margin: 4px 0 18px; }
+.key-actions { display: flex; gap: 10px; align-items: center; }
+.key-actions .spacer { flex: 1; }
+button.secondary.danger { color: var(--bad); }
+button.secondary.danger:hover { background: var(--bad-soft); }
 
 /* layout: the bench (circuit, signals, code) on the left, the chat on the right */
 .workspace { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(380px, 1fr); gap: 16px; align-items: start; }
@@ -326,7 +352,7 @@ textarea {
 
 /* Code shows exactly what you type: JetBrains Mono would otherwise draw >= as one ≥ symbol. */
 /* !important: the `font` shorthands above (more specific selectors) would otherwise reset this. */
-textarea, code, .snippet, #gutter, .problem, #error, .line-row .ln {
+textarea, code, .snippet, #gutter, .problem, #error, .line-row .ln, .key-field input {
   font-variant-ligatures: none !important; font-feature-settings: "liga" 0, "calt" 0 !important;
 }
 

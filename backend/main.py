@@ -2,6 +2,11 @@
 
 Run from the backend/ folder, inside the venv:
     uvicorn main:app --reload --port 8000
+
+API keys (BYOK): each request may bring the visitor's own keys as headers (X-Groq-Key, X-Gemini-Key,
+X-Gnani-Key; Live mode sends the Gnani key in its first WebSocket message). They are used for that
+request only and never stored or logged. Without them the keys in .env are used, unless
+REQUIRE_USER_KEYS=1 (a public server), where visitors must bring their own. See keys.py.
 """
 import asyncio
 import itertools
@@ -11,6 +16,7 @@ import re
 import shutil
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Literal, Optional, Union
 
 from dotenv import load_dotenv
@@ -25,8 +31,9 @@ from pydantic import BaseModel, Field
 
 import gnani
 import graph as agent
+import keys
 from compiler import compile_sketch
-from llm import LLMError, provider_info
+from llm import LLMError, has_key, provider_info
 
 MAX_CODE_BYTES = 8_000
 MAX_AUDIO_BYTES = 2_000_000  # 30 s of 16 kHz mono 16-bit WAV is about 1 MB
@@ -43,6 +50,23 @@ app.add_middleware(
 )
 
 GRAPH = agent.build_graph()
+NO_LLM_KEY = "no LLM API key: add a Groq or Gemini key with the 🔑 API keys button"
+
+
+def origin_allowed(origin, host):
+    """Our own page: the Vite dev server on localhost, or a page served by this backend (same host)."""
+    if re.fullmatch(LOCAL_ORIGIN, origin or ""):
+        return True
+    netloc = urlparse(origin or "").netloc
+    return bool(netloc) and netloc == host
+
+
+def gnani_key_or_401(request):
+    """The Gnani key for this request (the visitor's, or .env when allowed)."""
+    key = keys.get("gnani", keys.from_headers(request.headers).get("gnani"))
+    if not key:
+        raise HTTPException(status_code=401, detail=keys.missing_message("gnani"))
+    return key
 
 
 class CompileRequest(BaseModel):
@@ -72,6 +96,8 @@ class RunRequest(BaseModel):
 
 @app.get("/health")
 def health():
+    """Tools and keys on this server. With REQUIRE_USER_KEYS the server's own keys are never used,
+    so they are reported as not set and the page asks visitors for theirs."""
     try:
         provider, model = provider_info()
     except LLMError as e:
@@ -82,7 +108,9 @@ def health():
         "node": shutil.which("node"),
         "llm_provider": provider,
         "llm_model": model,
-        "gnani_key_set": bool(os.getenv("GNANI_API_KEY")),
+        "user_keys_required": keys.user_keys_required(),
+        "llm_key_set": has_key(),
+        "gnani_key_set": bool(keys.get("gnani")),
     }
 
 
@@ -99,28 +127,30 @@ async def transcribe_route(request: Request):
         raise HTTPException(status_code=400, detail="no audio received")
     if len(audio) > MAX_AUDIO_BYTES:
         raise HTTPException(status_code=413, detail="recording too long (max about 30 s)")
+    key = gnani_key_or_401(request)
     try:
-        return gnani.transcribe(audio)
+        return gnani.transcribe(audio, key=key)
     except gnani.GnaniError as e:
         raise HTTPException(status_code=502, detail=str(e))
 
 
 @app.post("/speak")
-def speak_route(req: SpeakRequest):
+def speak_route(req: SpeakRequest, request: Request):
     """Text in, audio out (Timbre). Only the short spoken summary is sent here, never code."""
+    key = gnani_key_or_401(request)
     try:
-        audio, content_type = gnani.speak(req.text, req.language)
+        audio, content_type = gnani.speak(req.text, req.language, key=key)
     except gnani.GnaniError as e:
         raise HTTPException(status_code=502, detail=str(e))
     return Response(content=audio, media_type=content_type)
 
 
 @app.post("/speak/stream")
-def speak_stream_route(req: SpeakRequest):
+def speak_stream_route(req: SpeakRequest, request: Request):
     """Live mode: Timbre streaming. The body is raw 16-bit mono PCM at the rate in X-Sample-Rate,
     sent while it is generated. The first chunk is fetched before answering, so a Gnani error
     becomes a proper HTTP error instead of a cut-off stream."""
-    chunks = gnani.speak_stream(req.text, req.language)
+    chunks = gnani.speak_stream(req.text, req.language, key=gnani_key_or_401(request))
     try:
         first = next(chunks)
     except StopIteration:
@@ -142,19 +172,42 @@ def speak_stream_route(req: SpeakRequest):
 @app.websocket("/live/stt")
 async def live_stt(browser: WebSocket):
     """Live mode: relay the browser's microphone to Prisma streaming and its messages back.
-    Browsers cannot set WebSocket headers, so the backend adds the API key here (it never reaches
-    the page). Browser -> us: 1,024-byte PCM frames (16 kHz, 16-bit mono, every 32 ms) and the
+    Browsers cannot set WebSocket headers, so the backend adds the API key to the upstream connection.
+    Browser -> us: first {"type":"auth","gnani_key":"..."} (the visitor's key; optional locally, where
+    .env is used), then 1,024-byte PCM frames (16 kHz, 16-bit mono, every 32 ms) and the
     {"type":"commit"} control frame. Us -> browser: Prisma's JSON messages (connected, speech_start,
     processing, transcript, error), plus {"type":"error"} if Gnani cannot be reached."""
-    if not re.fullmatch(LOCAL_ORIGIN, browser.headers.get("origin", "")):
-        await browser.close(code=1008)  # only our own page may use the key
+    if not origin_allowed(browser.headers.get("origin"), browser.headers.get("host")):
+        await browser.close(code=1008)  # only our own page may use this relay
         return
     await browser.accept()
+    user_key = ""
     try:
-        headers = gnani.stt_stream_headers()
+        first = await asyncio.wait_for(browser.receive(), timeout=10)
+    except asyncio.TimeoutError:
+        first = {}
+    if first.get("type") == "websocket.disconnect":
+        return
+    if first.get("text"):
+        try:
+            data = json.loads(first["text"])
+        except ValueError:
+            data = {}
+        if isinstance(data, dict) and data.get("type") == "auth":
+            user_key = keys.clean(data.get("gnani_key"))
+    key = keys.get("gnani", user_key)
+    if not key:
+        await browser.send_json({"type": "error", "message": keys.missing_message("gnani")})
+        await browser.close()
+        return
+    try:
+        headers = gnani.stt_stream_headers(key)
         upstream = await websockets.connect(gnani.STT_STREAM_URL, additional_headers=headers, open_timeout=15)
     except (gnani.GnaniError, OSError, websockets.WebSocketException, asyncio.TimeoutError) as e:
-        await browser.send_json({"type": "error", "message": f"could not start Gnani speech-to-text: {e}"})
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        message = (f"Gnani rejected the API key (HTTP {status}); check your Gnani key" if status in (401, 403)
+                   else f"could not start Gnani speech-to-text: {e}")
+        await browser.send_json({"type": "error", "message": message})
         await browser.close()
         return
 
@@ -222,21 +275,28 @@ def compile_route(req: CompileRequest):
 
 
 @app.post("/run")
-def run_route(req: RunRequest):
+def run_route(req: RunRequest, request: Request):
     """Streams Server-Sent Events: {"type":"step",...} while working, then {"type":"result",...}."""
     # The user's circuit must be valid before the agent starts.
     problem = agent.check_circuit(req.circuit, board_or_400(req.board))
     if problem:
         raise HTTPException(status_code=422, detail=f"circuit: {problem}")
+    user_keys = keys.from_headers(request.headers)  # this request only: never stored or logged
+    if not keys.call(user_keys, has_key):
+        raise HTTPException(status_code=401,
+                            detail=NO_LLM_KEY + ("" if keys.user_keys_required() else " (or set one in .env)"))
 
     mode = "compile" if req.debug_break is True else (req.debug_break or "")
 
+    def run():
+        return agent.stream_agent(GRAPH, req.session_id, req.text.strip(), req.circuit, mode, req.board,
+                                  mode=req.mode, via=req.via)
+
     def events():
         try:
-            for event in agent.stream_agent(GRAPH, req.session_id, req.text.strip(), req.circuit, mode, req.board,
-                                            mode=req.mode, via=req.via):
+            for event in keys.iterate(user_keys, run):
                 if event["type"] == "result":
-                    event["llm"] = "/".join(provider_info())
+                    event["llm"] = keys.call(user_keys, lambda: "/".join(provider_info()))
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as e:  # report instead of silently cutting the stream
             yield f"data: {json.dumps({'type': 'error', 'message': f'{type(e).__name__}: {e}'})}\n\n"

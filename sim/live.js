@@ -13,6 +13,10 @@
 // - Speakers or earphones: with speakers the browser's echo cancellation must stay on (or the mic hears
 //   the agent), but it also damps your voice while the agent talks, so interrupting is weak. With
 //   earphones there is no echo: it is switched off and interrupting works reliably (tested Nov 9).
+// - The visitor's Gnani key (sim/keys.js) goes with each spoken line and, because browsers cannot
+//   add headers to a WebSocket, as the first message of the speech-to-text connection.
+
+import { keyHeaders, gnaniKey } from './keys.js';
 
 const FRAME_SAMPLES = 512;      // 512 samples x 2 bytes = the 1,024-byte frame Prisma requires
 const DUCK_VOLUME = 0.25;       // the agent's volume while you are talking over it
@@ -92,7 +96,7 @@ function createPlayer(api) {
     try {
       const res = await fetch(`${api}/speak/stream`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...keyHeaders() },
         body: JSON.stringify({ text }),
         signal: abort.signal,
       });
@@ -193,6 +197,7 @@ export function createLive(api, handlers) {
   let retries = 0;
   let duckTimer = null;
   let earphones = false;
+  let fatal = false;        // the connection was refused: do not reconnect
 
   // Lower the agent's voice while you might be interrupting. A noise that never becomes a transcript
   // (a cough, a door) must not leave it quiet, so the volume comes back after 5 s at the latest.
@@ -222,8 +227,11 @@ export function createLive(api, handlers) {
 
   function connect() {
     setState('connecting');
-    ws = new WebSocket(`${api.replace(/^http/, 'ws')}/live/stt`);
+    ws = new WebSocket(`${(api || location.origin).replace(/^http/, 'ws')}/live/stt`);
     ws.binaryType = 'arraybuffer';
+    // First message: the key (empty = the server's own key, when it allows that). Sent before any
+    // audio frame, because frames are only sent once the socket is open.
+    ws.onopen = () => ws.send(JSON.stringify({ type: 'auth', gnani_key: gnaniKey() }));
     ws.onmessage = (e) => {
       let msg;
       try { msg = JSON.parse(e.data); } catch { return; }
@@ -239,11 +247,16 @@ export function createLive(api, handlers) {
         clearTimeout(duckTimer);
         player.stop();                                 // a real interruption, or simply the next turn
         handlers.onTranscript?.(text, msg.detected_language_code || '');
-      } else if (msg.type === 'error') handlers.onError?.(msg.message || 'speech-to-text error');
+      } else if (msg.type === 'error') {
+        // An error before "connected" (no key, a rejected key): reconnecting would fail the same way.
+        if (state === 'connecting') fatal = true;
+        handlers.onError?.(msg.message || 'speech-to-text error');
+      }
     };
     ws.onclose = () => {
       ws = null;
       if (!on) return;
+      if (fatal) { stop(); return; }
       // Gnani closes a session after 15 minutes or on an error: reconnect quietly, backing off a little.
       retries += 1;
       if (retries > 5) { handlers.onError?.('Lost the connection to speech-to-text. Live mode stopped.'); stop(); return; }
@@ -257,6 +270,7 @@ export function createLive(api, handlers) {
     player.unlock();
     on = true;
     retries = 0;
+    fatal = false;
     try {
       await openMic();
     } catch (err) {

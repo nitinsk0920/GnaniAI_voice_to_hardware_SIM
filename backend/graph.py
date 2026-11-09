@@ -878,8 +878,12 @@ def give_up(state):
                                 "fixes_made": []},
                 "steps": add_step(state, "give_up", f"unsupported part: {parts}")}
     if state.get("fatal"):
-        reason = f"a tool failed: {(state.get('problem') or '')[:200]}"
-        spoken = "Sorry, something went wrong on my side. Please try again in a moment."
+        problem = state.get("problem") or ""
+        reason = f"a tool failed: {problem[:200]}"
+        if "API key" in problem:   # the visitor's key is missing or was rejected (BYOK): say so plainly
+            spoken = "Your API key was not accepted. Please check it with the API keys button."
+        else:
+            spoken = "Sorry, something went wrong on my side. Please try again in a moment."
     else:
         reason = f"it still failed after {state.get('attempts', 0)} fix attempts"
         failed = [r for r in (state.get("report") or {}).get("results", []) if not r["ok"]]

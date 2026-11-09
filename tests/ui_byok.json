@@ -1,0 +1,18 @@
+[
+  {"sleep": 2500},
+  {"eval": "({dialogOpen: document.querySelector('#keysDialog').open, reason: document.querySelector('#keysReason').textContent, serverNoteHidden: document.querySelector('#keysServerNote').hidden, keysBtn: document.querySelector('#keysBtn').className, status: document.querySelector('#agentStatus').textContent})", "print": "first visit: the keys dialog opens by itself"},
+  {"shot": "1-dialog.png"},
+  {"eval": "document.querySelector('#keyGroq').value='gsk_fake_byok_test_000'; document.querySelector('#keyGnani').value='fake-gnani-key'; document.querySelector('#keyRemember').checked=false; document.querySelector('#keysForm button[type=submit]').click(); 'saved'"},
+  {"eval": "({dialogOpen: document.querySelector('#keysDialog').open, inSession: !!sessionStorage.getItem('gnani_keys'), inLocal: !!localStorage.getItem('gnani_keys'), keysBtn: document.querySelector('#keysBtn').className, status: document.querySelector('#agentStatus').textContent})", "print": "saved for this tab only"},
+  {"eval": "document.querySelector('#speakToggle').checked=false; document.querySelector('#request').value='make the LED blink'; document.querySelector('#askBtn').click(); 'asked'"},
+  {"waitFor": "!document.querySelector('#askBtn').disabled && /failed|Verified|could not/i.test(document.querySelector('#agentStatus').textContent)", "timeout": 60000},
+  {"eval": "(()=>{const m=[...document.querySelectorAll('#messages .msg')].pop(); return {status: document.querySelector('#agentStatus').textContent, last: m?.innerText.slice(0, 300)}})()", "print": "a rejected key is reported clearly"},
+  {"eval": "document.querySelector('#liveBtn').click(); 'live started'"},
+  {"waitFor": "document.querySelector('#livePanel').hidden && !document.querySelector('#heard').hidden", "timeout": 30000},
+  {"eval": "({panelHidden: document.querySelector('#livePanel').hidden, liveBtnShown: !document.querySelector('#liveBtn').hidden, heard: document.querySelector('#heard').textContent.slice(0, 200)})", "print": "Live mode with a refused key closes and says why"},
+  {"shot": "2-errors.png"},
+  {"eval": "document.querySelector('#keysBtn').click(); ({open: document.querySelector('#keysDialog').open, groqFilled: document.querySelector('#keyGroq').value.length, geminiFilled: document.querySelector('#keyGemini').value.length, type: document.querySelector('#keyGroq').type})", "print": "reopened: saved keys filled in, hidden"},
+  {"eval": "document.querySelector('#keysForget').click(); ({open: document.querySelector('#keysDialog').open, inSession: !!sessionStorage.getItem('gnani_keys'), inLocal: !!localStorage.getItem('gnani_keys'), keysBtn: document.querySelector('#keysBtn').className, status: document.querySelector('#agentStatus').textContent})", "print": "forget keys"},
+  {"eval": "document.querySelector('#request').value='make the LED blink'; document.querySelector('#askBtn').click(); ({dialogOpen: document.querySelector('#keysDialog').open, reason: document.querySelector('#keysReason').textContent, userMessages: document.querySelectorAll('#messages .msg.user').length})", "print": "no key: sending opens the dialog instead"},
+  {"shot": "3-no-keys.png"}
+]

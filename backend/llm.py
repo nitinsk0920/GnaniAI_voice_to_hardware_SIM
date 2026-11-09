@@ -1,13 +1,16 @@
 """The one place that talks to the LLM provider.
 
 Switch provider in .env:  LLM_PROVIDER=groq  or  LLM_PROVIDER=gemini
+                          (if only the other provider has a key, that one is used)
+Keys: from the request (BYOK, see keys.py) or .env.
 Optional overrides:       GROQ_MODEL=..., GEMINI_MODEL=..., LLM_REASONING=low|medium|high
 Backup provider:          LLM_FALLBACK=auto (default: the other provider, if its key is set) | gemini | groq | none
 Both providers expose an OpenAI-compatible chat endpoint, so one function covers both.
 
 Rate limits: Groq's free tier allows about 8,000 tokens a minute for gpt-oss-120b, roughly one build
 (understand + plan + explain) per minute. When the provider is busy (429/503), a timeout or a 5xx,
-_post retries briefly or moves to the backup provider instead of failing the request.
+_post retries briefly or moves to the backup provider instead of failing the request. A rejected key
+(401/403) also moves to the backup provider, if there is one.
 """
 import json
 import os
@@ -16,16 +19,16 @@ import time
 
 import httpx
 
+import keys
+
 PROVIDERS = {
     "groq": {
         "url": "https://api.groq.com/openai/v1/chat/completions",
-        "key_env": "GROQ_API_KEY",
         "model_env": "GROQ_MODEL",
         "default_model": "openai/gpt-oss-120b",
     },
     "gemini": {
         "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-        "key_env": "GEMINI_API_KEY",
         "model_env": "GEMINI_MODEL",
         "default_model": "gemini-3.5-flash",  # the -latest alias often returned 503 "high demand"
     },
@@ -46,9 +49,10 @@ def retry_after_seconds(response):
 class Busy(Exception):
     """The provider is rate limited, overloaded, timing out or failing (5xx): another try may work."""
 
-    def __init__(self, message, wait):
+    def __init__(self, message, wait, rejected_key=False):
         super().__init__(message)
         self.wait = wait
+        self.rejected_key = rejected_key  # 401/403: waiting will not help, another key might
 
 
 class LLMError(Exception):
@@ -61,11 +65,19 @@ class LLMError(Exception):
 
 
 def provider_info():
+    """(provider, model) for this request: LLM_PROVIDER, or the other provider when only it has a key."""
     name = os.getenv("LLM_PROVIDER", "groq").strip().lower()
     if name not in PROVIDERS:
         raise LLMError(f"Unknown LLM_PROVIDER '{name}' (use groq or gemini)", bad_output=False)
+    if not keys.get(name):
+        name = next((n for n in PROVIDERS if keys.get(n)), name)
     p = PROVIDERS[name]
     return name, os.getenv(p["model_env"]) or p["default_model"]
+
+
+def has_key():
+    """Is there a key for at least one LLM provider (the user's, or .env when allowed)?"""
+    return any(keys.get(n) for n in PROVIDERS)
 
 
 def fallback_provider(primary):
@@ -74,7 +86,7 @@ def fallback_provider(primary):
     if choice in ("", "none", "off"):
         return None
     other = next(n for n in PROVIDERS if n != primary) if choice == "auto" else choice
-    if other == primary or other not in PROVIDERS or not os.getenv(PROVIDERS[other]["key_env"]):
+    if other == primary or other not in PROVIDERS or not keys.get(other):
         return None
     return other
 
@@ -82,9 +94,12 @@ def fallback_provider(primary):
 def _call(name, messages):
     """One request to one provider. Raises Busy (worth another try) or LLMError (it is not)."""
     p = PROVIDERS[name]
-    key = os.getenv(p["key_env"])
+    key = keys.get(name)
     if not key:
-        raise LLMError(f"{p['key_env']} is missing from .env", bad_output=False)
+        message = (keys.missing_message(name) if has_key()
+                   else "no LLM API key: add a Groq or Gemini key with the 🔑 API keys button"
+                   + ("" if keys.user_keys_required() else " (or set one in .env)"))
+        raise LLMError(message, bad_output=False)
     body = {
         "model": os.getenv(p["model_env"]) or p["default_model"],
         "messages": messages,
@@ -100,6 +115,9 @@ def _call(name, messages):
         raise Busy(f"could not reach {name}: {e}", wait=float("inf"))
     if r.status_code == 429:
         raise Busy(f"{name} rate limit reached", wait=retry_after_seconds(r))
+    if r.status_code in (401, 403):
+        raise Busy(f"{name} rejected the API key (HTTP {r.status_code}); check your {keys.LABELS[name]} key",
+                   wait=float("inf"), rejected_key=True)
     if r.status_code >= 500:
         raise Busy(f"{name} returned HTTP {r.status_code} (busy or down)", wait=retry_after_seconds(r))
     if r.status_code != 200:
@@ -126,8 +144,9 @@ def _post(messages):
         try:
             return _call(backup, messages)
         except Busy as e:
-            raise LLMError(f"{busy}; backup {e}; please try again in a minute", bad_output=False)
-    raise LLMError(f"{busy}; please try again in a minute", bad_output=False)
+            raise LLMError(f"{busy}; backup {e}" + ("" if e.rejected_key else "; please try again in a minute"),
+                           bad_output=False)
+    raise LLMError(f"{busy}" + ("" if busy.rejected_key else "; please try again in a minute"), bad_output=False)
 
 
 def parse_json(text):

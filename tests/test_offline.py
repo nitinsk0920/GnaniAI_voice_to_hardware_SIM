@@ -116,9 +116,12 @@ try:
     try: llm._post(msgs); raise AssertionError("should fail")
     except llm.LLMError as e: assert "try again" in str(e) and log == ["groq"]                               # too long, no backup
     os.environ["LLM_FALLBACK"] = "auto"
+    log = scripted(401, 200); llm._post(msgs); assert log == ["groq", "gemini"]                               # rejected key: backup
+    os.environ["LLM_FALLBACK"] = "none"
     log = scripted(401)
     try: llm._post(msgs); raise AssertionError("should fail")
-    except llm.LLMError as e: assert "401" in str(e) and log == ["groq"]                                     # auth error: no retry
+    except llm.LLMError as e: assert "rejected the API key" in str(e) and "try again" not in str(e) and log == ["groq"]  # no retry
+    os.environ["LLM_FALLBACK"] = "auto"
     log = scripted((429, 15), (429, 15))
     try: llm._post(msgs); raise AssertionError("should fail")
     except llm.LLMError as e: assert "backup" in str(e) and log == ["groq", "gemini"]                        # both busy
@@ -195,4 +198,102 @@ assert result["type"] == "result" and result["status"] == "passed" and result["a
 assert calls == ["understand", "plan", "fix", "explain"], calls
 assert [e["type"] for e in events].index("say") < len(events) - 1
 print("live narration (say events) ok")
+
+# ---------- BYOK: the visitor's own keys, per request (keys.py, llm.py, main.py; no real API calls) ----------
+import asyncio, keys
+saved_env = {k: os.environ.get(k) for k in ("REQUIRE_USER_KEYS", "GROQ_API_KEY", "GEMINI_API_KEY", "GNANI_API_KEY",
+                                           "LLM_PROVIDER", "LLM_FALLBACK")}
+os.environ.update(GROQ_API_KEY="env-groq", GEMINI_API_KEY="env-gemini", GNANI_API_KEY="env-gnani",
+                  LLM_PROVIDER="groq", LLM_FALLBACK="auto")
+os.environ.pop("REQUIRE_USER_KEYS", None)
+SECRET = "gsk_TEST_SECRET_never_stored_4711"
+try:
+    assert keys.clean(" gsk_abc ") == "gsk_abc" and keys.clean("a b") == "" and keys.clean("kľúč") == "" \
+        and keys.clean("x" * 400) == ""
+    assert keys.from_headers({"x-groq-key": "u-groq", "x-gnani-key": " "}) == {"groq": "u-groq"}
+    assert keys.get("groq") == "env-groq"                                   # locally: .env
+    assert keys.call({"groq": "u-groq"}, keys.get, "groq") == "u-groq"       # the user's key wins
+    assert keys.get("gnani", "explicit") == "explicit"
+    os.environ["REQUIRE_USER_KEYS"] = "1"                                    # public server: never .env
+    assert keys.get("groq") == "" and keys.get("gnani") == "" and not llm.has_key()
+    assert keys.call({"gemini": "u-gem"}, llm.provider_info)[0] == "gemini"  # only a Gemini key: use Gemini
+    assert keys.call({"gemini": "u-gem"}, llm.fallback_provider, "gemini") is None
+    assert keys.call({"groq": "u-g", "gemini": "u-gem"}, llm.fallback_provider, "groq") == "gemini"
+    assert ".env" not in keys.missing_message("gnani")
+    sent = []
+    llm.httpx.post = lambda url, json=None, timeout=None, headers=None: sent.append(headers["Authorization"]) or FakeResponse(200)
+    keys.call({"groq": "u-groq"}, llm._post, msgs)
+    assert sent == ["Bearer u-groq"], sent
+    try: llm._post(msgs); raise AssertionError("should fail without a key")
+    except llm.LLMError as e: assert "no LLM API key" in str(e) and not e.bad_output
+    llm.httpx.post = real_post
+    print("keys: user key > .env, REQUIRE_USER_KEYS ignores .env, provider follows the keys ok")
+
+    # The key reaches every LLM call of a real graph run (LangGraph worker threads) and is never stored.
+    seen = []
+    def keyed_llm(system, user, required_keys=()):
+        seen.append(keys.get("groq"))
+        return fake_llm(system, user, required_keys)
+    g.chat_json = keyed_llm
+    events = list(keys.iterate({"groq": SECRET}, lambda: g.stream_agent(G, "s3", "blink the LED", json.loads(json.dumps(c13)))))
+    assert events[-1]["status"] == "passed" and len(seen) == 3 and set(seen) == {SECRET}, (seen, events[-1].get("problem"))
+    assert keys.get("groq") == ""                                            # nothing leaks outside the request
+    stored = b"".join(f.read_bytes() for f in db.DB_PATH.parent.iterdir())
+    assert SECRET.encode() not in stored and b"gsk_TEST" not in stored, "a key must never reach the SQLite file"
+    print("key reaches every LLM call in the graph, never stored in SQLite ok")
+
+    # main.py routes (FastAPI test client). Importing main reads .env, but REQUIRE_USER_KEYS keeps it unused.
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+    import main
+    client = TestClient(main.app)
+    h = client.get("/health").json()
+    assert h["user_keys_required"] and not h["llm_key_set"] and not h["gnani_key_set"], h
+    r = client.post("/run", json={"session_id": "s4", "text": "blink", "circuit": c13})
+    assert r.status_code == 401 and "API keys" in r.json()["detail"] and ".env" not in r.json()["detail"], r.text
+    assert client.post("/speak", json={"text": "hi"}).status_code == 401
+    assert client.post("/speak/stream", json={"text": "hi"}).status_code == 401
+    assert client.post("/transcribe", content=b"RIFF....", headers={"Content-Type": "audio/wav"}).status_code == 401
+    seen.clear()
+    with client.stream("POST", "/run", json={"session_id": "s4", "text": "blink the LED", "circuit": c13},
+                       headers={"X-Groq-Key": SECRET}) as r:
+        body = r.read().decode()
+    assert r.status_code == 200 and '"status": "passed"' in body and set(seen) == {SECRET}, body[-300:]
+    assert SECRET not in body
+
+    # Live mode relay: the key comes in the first WebSocket message; other sites may not use the relay.
+    upstream_headers = []
+    class FakeUpstream:
+        close_code = 1000
+        async def send(self, data): pass
+        async def close(self): pass
+        def __aiter__(self): return self.messages()
+        async def messages(self):
+            yield '{"type": "connected"}'
+    async def fake_connect(url, additional_headers=None, open_timeout=None):
+        upstream_headers.append(additional_headers)
+        return FakeUpstream()
+    real_connect, main.websockets.connect = main.websockets.connect, fake_connect
+    try:
+        try:
+            with client.websocket_connect("/live/stt", headers={"origin": "https://evil.example"}) as ws:
+                ws.receive_text(); raise AssertionError("another site must be refused")
+        except WebSocketDisconnect as e:
+            assert e.code == 1008
+        with client.websocket_connect("/live/stt", headers={"origin": "http://localhost:5173"}) as ws:
+            ws.send_bytes(bytes(1024))                                       # no auth message, no .env key
+            assert "Gnani API key" in ws.receive_json()["message"]
+        with client.websocket_connect("/live/stt", headers={"origin": "http://testserver"}) as ws:  # same host
+            ws.send_text(json.dumps({"type": "auth", "gnani_key": "user-gnani"}))
+            assert ws.receive_json()["type"] == "connected"
+        assert len(upstream_headers) == 1 and upstream_headers[0]["x-api-key-id"] == "user-gnani"
+    finally:
+        main.websockets.connect = real_connect
+    print("routes: 401 without keys, keys from headers, Live relay key + origin check ok")
+finally:
+    g.chat_json = fake_llm
+    llm.httpx.post = real_post
+    for k, v in saved_env.items():
+        if v is None: os.environ.pop(k, None)
+        else: os.environ[k] = v
 print("ALL OFFLINE TESTS PASSED")

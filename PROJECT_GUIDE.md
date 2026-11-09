@@ -1,4 +1,4 @@
-# CLAUDE.md: Voice-to-Hardware Simulator
+# Project guide: Voice-to-Hardware Simulator
 
 Last updated: 2026-11-08 (chat). Read this file fully, then **`MEMORY.md` (handoff: current state, open items, how to test)**, then `WORKFLOW.md` (agent design) when changing the agent. On a new machine, start with section 5b.
 Working folder: `D:\gnani`. Entry for the **Great Indian AI Internship Challenge (Gnani AI)**.
@@ -112,13 +112,13 @@ Check: `.venv\Scripts\python tests\test_verify.py` should end with "ALL AS EXPEC
 cd D:\gnani\backend; ..\.venv\Scripts\Activate.ps1; uvicorn main:app --reload --port 8000
 cd D:\gnani\sim; npm run dev        # open http://localhost:5173
 ```
-`http://localhost:8000/health` should show `arduino_cli`, `node`, the LLM, and `"gnani_key_set": true`. The Servo library comes with the repo (`arduino/libraries/Servo`); nothing else is installed by hand. A different project folder works too (all paths are relative), except `tests/drive.mjs`, which expects Edge at its default path.
+`http://localhost:8000/health` should show `arduino_cli`, `node`, the LLM, `"llm_key_set": true` and `"gnani_key_set": true` (keys from `.env`, or entered in the page with 🔑 API keys). The Servo library comes with the repo (`arduino/libraries/Servo`); nothing else is installed by hand. A different project folder works too (all paths are relative), except `tests/drive.mjs`, which expects Edge at its default path.
 
 ## 6. Folder layout
 
 ```
 D:\gnani\
-  CLAUDE.md   WORKFLOW.md   THIRD_PARTY_NOTICES.md   .gitignore   .env (never commit)
+  PROJECT_GUIDE.md   WORKFLOW.md   THIRD_PARTY_NOTICES.md   .gitignore   .env (never commit)
   blink\blink.ino                 manual test sketch (keep)
   out\                            manual test output (ignore)
   backend\
@@ -126,6 +126,7 @@ D:\gnani\
     boards\uno.json, nano.json, mega.json    board profiles: compiler fqbn, mcu, picture, power pins, pin map (shared with the browser)
     boards\avr_chips.mjs          avr8js setup per chip (ATmega328P, ATmega2560), shared by sim/simulator.js and verify.mjs
     compiler.py                   arduino-cli wrapper
+    keys.py                       per-request API keys (BYOK)
     llm.py                        one function that calls the LLM provider (Phase 2)
     gnani.py                      Prisma and Timbre calls (Phase 4)
     graph.py                      LangGraph nodes and edges (Phase 2+)
@@ -134,7 +135,7 @@ D:\gnani\
     verify\verify.mjs             headless avr8js run (Phase 3), with its own package.json
     requirements.txt
   sim\                            Vite vanilla project
-    index.html   main.js   simulator.js   circuit.js (parts, wiring)   signals.js (graph)   voice.js (mic to WAV)   chat.js (chat panel)   live.js (Live mode)
+    index.html   main.js   simulator.js   circuit.js (parts, wiring)   signals.js (graph)   voice.js (mic to WAV)   chat.js (chat panel)   live.js (Live mode)   keys.js (visitor's API keys)
   arduino\libraries\Servo\        Servo 1.3.0 (LGPL-2.1), vendored
   tests\                          offline tests, live agent test, headless-Edge UI driver (see MEMORY.md)
   MEMORY.md                       handoff notes for the next session
@@ -224,7 +225,7 @@ function loadHex(source, target) {
 - Nov 10: record, post and submit with buffer; do not leave it to the last hours.
 
 ## 9. After the demo video (not before)
-- **BYOK:** a field where visitors enter their own Gnani key, held only in the browser and sent per request, never stored or logged by the backend. Prepare for it now by keeping every Gnani call behind `gnani.py`.
+- **BYOK: done (Nov 9).** "🔑 API keys" dialog: visitors enter their own Groq and/or Gemini key and their Gnani key, kept only in the browser (sessionStorage, or localStorage with "Remember on this device") and sent per request as headers `X-Groq-Key`, `X-Gemini-Key`, `X-Gnani-Key`; Live mode sends the Gnani key as the first WebSocket message `{"type":"auth","gnani_key":...}`. The backend (`backend/keys.py`) holds them in a per-request context variable, **never** in the graph state or the LangGraph config (LangGraph copies string `configurable` values into the SQLite checkpoint metadata). `REQUIRE_USER_KEYS=1` (the public server) never uses the `.env` keys; locally an empty field falls back to `.env`. Tested: `tests/test_offline.py` (BYOK section), `tests/ui_byok.json` (fake keys, headless Edge), `tests/check_byok.py <url>` (real keys from .env sent as a visitor's; one build, one Timbre line, one Prisma connect).
 - **Deployment (optional):** free hosts give little CPU and RAM, sleep after idle, and wipe the filesystem on restart, so compile and simulation will be slower and SQLite data will be lost. The app needs Python, Node and arduino-cli with the `arduino:avr` core installed at build time, so it would be a Docker image plus a static host for `sim/`. Read secrets from environment variables, add a rate limit or passcode, and note that browsers only allow the microphone over HTTPS. Write the `Dockerfile` only when the user asks.
 
 ## 10. Risks, cut-line and status
@@ -251,6 +252,7 @@ function loadHex(source, target) {
 | Boards | Nov 9: board profiles (`backend/boards/*.json`) plus shared chip setups (`backend/boards/avr_chips.mjs`, used by the browser and the verifier). **Uno, Nano and Mega 2560 done.** Nano: A6/A7 analog-only. Mega: custom timers 0-5, ports A-L with correct interrupts, 16-channel ADC (A8-A15 via MUX5); all 15 PWM pins, servo (Timer5), tone (Timer2), A0/A8 and attachInterrupt measured in `tests/test_mega.py` (25/25). Next (later): Raspberry Pi Pico (rp2040js; bootrom not in the npm package; needs the arduino-pico core). ESP32/STM32: no open-source engine, Wokwi CI parked by the user |
 | Chat | Done (Nov 8): chat panel (user/agent bubbles, live steps in the reply, result card), `understand` node (build vs. question; answers from code, circuit, measurements and conversation in the user's language/script), line-by-line explanation (click a row to select the line), editor line numbers, session restore after reload (`GET /session/{id}`), LLM retry and Groq-to-Gemini backup on rate limits. Tested offline (fake LLM) and in headless Edge (`tests/ui_chat.json`, `tests/ui_timing_bug.json`) |
 | Live mode | Done (Nov 9): hands-free conversation like Gemini Live. "Go Live" keeps the mic open; Prisma **streaming** (WebSocket, relayed by the backend at `WS /live/stt`, server-side VAD) detects turns; replies are spoken with Timbre **streaming** (SSE, `POST /speak/stream`, raw PCM played as it arrives). The agent speaks a quick acknowledgement, a line when a measured test fails and it fixes itself, then the result. Talking over it interrupts it; an echo guard ignores its own voice; "🎧 Earphones" turns echo cancellation off for reliable interrupting. Tested with a fake microphone in headless Edge (`tests/ui_live.json`, `tests/ui_live_interrupt.json`) and `tests/test_live.mjs` |
+| BYOK | Done (Nov 9): visitors' own Groq/Gemini and Gnani keys, per request, never stored or logged (section 9). `REQUIRE_USER_KEYS=1` for the public server |
 | Phase 5 | Next: polish and demo |
 
 Phase 4 notes (from docs.gnani.ai, Nov 8):
