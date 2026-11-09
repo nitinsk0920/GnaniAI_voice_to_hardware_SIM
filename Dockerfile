@@ -51,4 +51,5 @@ RUN arduino-cli compile --fqbn arduino:avr:uno --libraries arduino/libraries --o
 ENV REQUIRE_USER_KEYS=1 RATE_LIMIT=1
 WORKDIR /home/user/app/backend
 EXPOSE 7860
-CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860", "--proxy-headers", "--forwarded-allow-ips", "*"]
+# PORT: set by the host (Render: 10000); 7860 otherwise (Hugging Face Spaces, local test).
+CMD ["sh", "-c", "exec python -m uvicorn main:app --host 0.0.0.0 --port ${PORT:-7860} --proxy-headers --forwarded-allow-ips '*'"]

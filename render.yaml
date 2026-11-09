@@ -1,0 +1,19 @@
+# Render Blueprint: the Dockerfile as one free web service (Render dashboard: New > Blueprint).
+# Free plan: 512 MB RAM and a small slice of one CPU, so builds are slower here than on a laptop
+# (measured with docker --cpus=0.1 --memory=512m: compile 4-8 s, one simulated check 10-27 s).
+# Visitors bring their own API keys, so no secrets are set here.
+services:
+  - type: web
+    name: voice-to-hardware
+    runtime: docker
+    plan: free
+    region: singapore          # closest Render region to India
+    healthCheckPath: /health
+    autoDeploy: true           # redeploys on every push to main
+    envVars:
+      - key: MAX_PARALLEL_BUILDS
+        value: "1"             # two builds would share the small CPU and both time out
+      - key: VERIFY_TIMEOUT_S
+        value: "90"            # one headless simulation (30 s on a normal machine)
+      - key: AGENT_TIME_CAP_S
+        value: "240"           # no new fix attempt after this long (90 s on a normal machine)

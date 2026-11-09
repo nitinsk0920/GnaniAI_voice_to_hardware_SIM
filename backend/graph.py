@@ -11,6 +11,7 @@ State is checkpointed in SQLite per session: a follow-up ("slower") sees the las
 conversation (`messages`) lets the user ask questions about it in a chat.
 """
 import json
+import os
 import re
 import shutil
 import sqlite3
@@ -29,7 +30,9 @@ from evaluator import evaluate
 from llm import LLMError, chat_json
 
 MAX_FIXES = 3
-TIME_CAP_S = 90
+# Slow servers (Render free: a small slice of one CPU) raise these two with environment variables.
+TIME_CAP_S = int(os.getenv("AGENT_TIME_CAP_S", "90"))       # no new fix attempt after this long
+VERIFY_TIMEOUT_S = int(os.getenv("VERIFY_TIMEOUT_S", "30"))  # one headless simulation
 MAX_CODE_LINES = 120
 MAX_CODE_BYTES = 8_000
 MIN_SIM_MS, MAX_SIM_MS = 4000, 12000
@@ -574,9 +577,9 @@ def run_simulation(hex_text, config):
         cfg_file.write_text(json.dumps(config))
         try:
             out = subprocess.run([node, str(VERIFY_SCRIPT), str(hex_file), str(cfg_file)],
-                                 capture_output=True, text=True, timeout=30)
+                                 capture_output=True, text=True, timeout=VERIFY_TIMEOUT_S)
         except subprocess.TimeoutExpired:
-            return None, "the simulation took longer than 30 s"
+            return None, f"the simulation took longer than {VERIFY_TIMEOUT_S} s"
     if out.returncode != 0:
         return None, f"simulator error: {out.stderr.strip()[:500]}"
     return json.loads(out.stdout), None
