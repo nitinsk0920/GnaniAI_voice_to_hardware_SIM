@@ -1,6 +1,6 @@
 # Voice-to-Hardware Simulator: solution pitch
 
-**Try it:** https://voice-to-hardware.onrender.com · **Code:** https://github.com/nitinsk0920/GnaniAI_voice_to_hardware_SIM
+**Try it:** https://voice-to-hardware.onrender.com · **Demo video:** https://lnkd.in/p/gusZK59H · **Code:** https://github.com/nitinsk0920/GnaniAI_voice_to_hardware_SIM
 
 ## The problem
 Learning electronics is hard to start. You need an Arduino board, parts, wires and C++ code, and

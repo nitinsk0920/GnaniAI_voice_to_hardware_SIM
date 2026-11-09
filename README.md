@@ -4,6 +4,7 @@
 simulator, measures the pins to prove it works, fixes itself, and explains every line.**
 
 - **Try it online:** https://voice-to-hardware.onrender.com (bring your own API keys, see below)
+- **Demo video (LinkedIn):** https://lnkd.in/p/gusZK59H
 - **One-page solution pitch:** [PITCH.md](PITCH.md)
 - Entry for the **Great Indian AI Internship Challenge** by Gnani AI. Voice by Gnani **Prisma** and **Timbre**.
 
